@@ -2,10 +2,11 @@ use anyhow::{anyhow, Context, Result};
 use chrono::Utc;
 use clap::{Parser, Subcommand};
 use std::str::FromStr;
+use std::sync::Arc;
 use tracing_subscriber::EnvFilter;
 
-use marg_core::{Config, MargToken, NewKey, PrincipalKind, BudgetSpec};
-use marg_storage::{SqliteStorage, Storage};
+use marg_core::{secret, BudgetSpec, Config, MargToken, NewKey, PrincipalKind};
+use marg_storage::{PostgresStorage, SqliteStorage, Storage};
 
 #[derive(Parser)]
 #[command(name = "marg", version, about = "Marg: self-hosted AI gateway")]
@@ -173,19 +174,40 @@ fn print_version(verbose: bool) {
     }
 }
 
-async fn open_storage(config_path: &str) -> Result<SqliteStorage> {
+async fn open_storage(config_path: &str) -> Result<Arc<dyn Storage>> {
     let cfg = Config::load(config_path)
         .with_context(|| format!("loading config from {}", config_path))?;
-    let storage = SqliteStorage::open(&cfg.storage.path)
-        .await
-        .with_context(|| format!("opening sqlite at {}", cfg.storage.path))?;
-    storage.migrate().await.context("running database migrations")?;
-    Ok(storage)
+    match cfg.storage.backend.as_str() {
+        "sqlite" => {
+            let storage = SqliteStorage::open(&cfg.storage.path)
+                .await
+                .with_context(|| format!("opening sqlite at {}", cfg.storage.path))?;
+            storage.migrate().await.context("running sqlite migrations")?;
+            Ok(Arc::new(storage) as Arc<dyn Storage>)
+        }
+        "postgres" => {
+            let dsn_ref = cfg
+                .storage
+                .dsn
+                .as_deref()
+                .context("storage.dsn must be set for postgres backend")?;
+            let dsn = secret::resolve(dsn_ref).context("resolving storage.dsn")?;
+            let storage = PostgresStorage::connect(&dsn)
+                .await
+                .with_context(|| "connecting to postgres")?;
+            storage.migrate().await.context("running postgres migrations")?;
+            Ok(Arc::new(storage) as Arc<dyn Storage>)
+        }
+        other => anyhow::bail!(
+            "storage.backend '{}' is not supported: choose 'sqlite' or 'postgres'",
+            other
+        ),
+    }
 }
 
 async fn db_migrate(config_path: &str) -> Result<()> {
-    let _ = open_storage(config_path).await?;
-    println!("migrations applied");
+    let storage = open_storage(config_path).await?;
+    println!("migrations applied to {}", storage.backend_name());
     Ok(())
 }
 

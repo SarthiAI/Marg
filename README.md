@@ -4,18 +4,33 @@ Self-hosted AI gateway written in Rust. Applications point their LLM client at M
 
 This is the v0.1 scaffold. The build is being assembled phase by phase. See `../build-state/INDEX.md` for the full roadmap.
 
-## What works today (P00)
+## What works today (P00 to P03)
 
 - A single static binary called `marg`.
-- `marg start` boots an axum HTTP server on the configured bind address (default `0.0.0.0:8080`) and serves:
-  - `GET /health` liveness check
-  - `GET /ready` readiness check
-  - `GET /version` build metadata
-- `marg version` prints the version. `marg version --verbose` prints the full version JSON.
-- TOML config loading from `./marg.toml` by default, override with `--config <path>`. Missing config file is fine, defaults are used.
+- OpenAI-compatible Chat Completions endpoint (`POST /v1/chat/completions`), streaming and non-streaming.
+- Provider adapters for OpenAI, Anthropic, Google Gemini, and AWS Bedrock. Apps speak the OpenAI shape; Marg translates to and from the upstream protocol.
+- Config-driven routing with per-model glob match, per-team match, weighted A/B split, and one-shot failover on retriable upstream errors (5xx, timeout, network).
+- Per-key budgets and per-key requests-per-minute rate limits, enforced on the hot path.
+- Pluggable storage:
+  - **SQLite** (default) for single-node development and small production.
+  - **Postgres** for production single-node and small clusters.
+  - **Redis** as an optional hot store paired with either backend for cluster-shared budget reservations and rate counters.
+- Health, readiness, version endpoints. `/ready` reports the backend status for both storage and hot store.
 - Graceful shutdown on SIGTERM / SIGINT.
 
-Provider proxying, budgets, multi-provider routing, observability, admin API, and console UI all land in P01 through P06. Kavach governance lands in P08 and P09. Roadmap in `../build-state/INDEX.md`.
+Observability (Prometheus metrics, structured JSON logs), the admin HTTP API, and the console UI land in P04 through P06. Kavach governance lands in P08 and P09. Roadmap in `../build-state/INDEX.md`.
+
+## Throughput tiers
+
+Numbers below are the design targets for each deployment shape. Full benchmark scenarios live in `bench/scenarios/` and the acceptance gates are tracked in `../build-state/architecture/testing-strategy.md`. Per-release measured numbers will be published in `BENCHMARKS.md` from P04 onward.
+
+| Tier | Backend | Hot store | Marg instances | Design target |
+|---|---|---|---|---|
+| Dev / small prod | SQLite | local (in-process) | 1 | ~1k req/s, single file, zero external services |
+| Single-node prod | Postgres | local (in-process) or Redis | 1 | ~50k req/s on a 16-core box |
+| Clustered prod | Postgres | Redis (required) | many | millions req/s aggregate (P07 cluster-10 acceptance gate) |
+
+Hot-store invariant: if Redis is configured and unreachable, Marg refuses requests with `503 hot_store_unreachable` rather than silently degrading. Same fail-closed rule applies to the durable backend.
 
 ## Build
 
@@ -43,7 +58,26 @@ Stop with `Ctrl-C` or `kill -TERM <pid>`.
 
 ## Configuration
 
-See `marg.toml.example` for the documented config shape. Copy it to `marg.toml` and edit. P00 only honors the `[server]` block; later phases fill in the rest.
+See `marg.toml.example` for the documented config shape. Copy it to `marg.toml` and edit. Secrets in any `api_key` or `dsn` field accept three reference forms: `plain:<value>` (default), `env:<NAME>`, and `file:<path>`. Use the env or file forms when you do not want the secret to sit in the config file.
+
+Switching the durable backend is one config change plus a migration:
+
+```toml
+[storage]
+backend = "postgres"
+dsn = "env:MARG_PG_DSN"
+
+[storage.hot]
+backend = "redis"
+url = "env:MARG_REDIS_URL"
+```
+
+```bash
+marg db migrate --config ./marg.toml
+marg start --config ./marg.toml
+```
+
+`/ready` will report `{ "storage": {..., "ok": true}, "hot": {..., "ok": true} }` once both backends are reachable.
 
 ## Workspace layout
 

@@ -1,4 +1,4 @@
-use axum::{Json, extract::State};
+use axum::{extract::State, http::StatusCode, response::IntoResponse, Json};
 use serde_json::{json, Value};
 
 use crate::state::AppState;
@@ -7,12 +7,26 @@ pub async fn health() -> Json<Value> {
     Json(json!({ "status": "ok" }))
 }
 
-pub async fn ready(State(state): State<AppState>) -> Json<Value> {
-    // Try a cheap storage round-trip so /ready actually reflects readiness.
-    match state.storage.list_keys().await {
-        Ok(_) => Json(json!({ "status": "ready" })),
-        Err(e) => Json(json!({ "status": "degraded", "error": e.to_string() })),
+pub async fn ready(State(state): State<AppState>) -> impl IntoResponse {
+    let mut status_code = StatusCode::OK;
+    let mut storage = json!({"backend": state.storage.backend_name(), "ok": true});
+    if let Err(e) = state.storage.ping().await {
+        status_code = StatusCode::SERVICE_UNAVAILABLE;
+        storage["ok"] = json!(false);
+        storage["error"] = json!(e.to_string());
     }
+    let mut hot = json!({"backend": state.hot.backend_name(), "ok": true});
+    if let Err(e) = state.hot.ping().await {
+        status_code = StatusCode::SERVICE_UNAVAILABLE;
+        hot["ok"] = json!(false);
+        hot["error"] = json!(e.to_string());
+    }
+    let body = Json(json!({
+        "status": if status_code == StatusCode::OK { "ready" } else { "degraded" },
+        "storage": storage,
+        "hot": hot,
+    }));
+    (status_code, body)
 }
 
 pub async fn version() -> Json<Value> {

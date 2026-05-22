@@ -49,13 +49,13 @@ pub async fn chat_completions(
         })?;
 
     let quota_model = resolution.primary.model.clone();
-    quota::check(&state, &key.id, &budget, &req, &quota_model).await?;
+    let reservation = quota::check(&state, &key.id, &budget, &req, &quota_model).await?;
 
     let started = Instant::now();
     if req.stream {
-        stream_response(state, key, req, resolution, started).await
+        stream_response(state, key, req, resolution, reservation, started).await
     } else {
-        non_stream_response(state, key, req, resolution, started).await
+        non_stream_response(state, key, req, resolution, reservation, started).await
     }
 }
 
@@ -64,15 +64,23 @@ async fn non_stream_response(
     key: marg_core::MargKey,
     req: ChatRequest,
     resolution: marg_core::RouteResolution,
+    reservation: quota::QuotaReservation,
     started: Instant,
 ) -> Result<Response, ChatError> {
-    let outcome = proxy::call_with_failover_non_stream(
+    let outcome = match proxy::call_with_failover_non_stream(
         &state,
         resolution.primary.clone(),
         resolution.fallbacks.clone(),
         &req,
     )
-    .await?;
+    .await
+    {
+        Ok(o) => o,
+        Err(e) => {
+            settle_reservation(&state, &key.id, &reservation, 0.0).await;
+            return Err(e);
+        }
+    };
     let provider_resp = outcome.value;
     let final_target = outcome.target;
     let mut attempts = outcome.previous_failures;
@@ -85,6 +93,8 @@ async fn non_stream_response(
         provider_resp.usage.prompt_tokens,
         provider_resp.usage.completion_tokens,
     );
+
+    settle_reservation(&state, &key.id, &reservation, actual_cost).await;
 
     let log = RequestLogEntry {
         id: uuid::Uuid::new_v4().to_string(),
@@ -105,7 +115,7 @@ async fn non_stream_response(
 
     let storage = state.storage.clone();
     let key_id = key.id.clone();
-    let day = Utc::now().date_naive();
+    let day = reservation.day;
     if let Err(e) = storage.add_spend(&key_id, day, actual_cost).await {
         tracing::warn!(?e, key_id = %key_id, "failed to add spend after non-stream response");
     }
@@ -130,15 +140,23 @@ async fn stream_response(
     key: marg_core::MargKey,
     req: ChatRequest,
     resolution: marg_core::RouteResolution,
+    reservation: quota::QuotaReservation,
     started: Instant,
 ) -> Result<Response, ChatError> {
-    let outcome = proxy::call_with_failover_stream(
+    let outcome = match proxy::call_with_failover_stream(
         &state,
         resolution.primary.clone(),
         resolution.fallbacks.clone(),
         &req,
     )
-    .await?;
+    .await
+    {
+        Ok(o) => o,
+        Err(e) => {
+            settle_reservation(&state, &key.id, &reservation, 0.0).await;
+            return Err(e);
+        }
+    };
     let provider_stream = outcome.value;
     let final_target = outcome.target;
     let mut attempts = outcome.previous_failures;
@@ -150,10 +168,14 @@ async fn stream_response(
     let (tx, rx) = mpsc::unbounded_channel::<Result<Bytes, std::io::Error>>();
 
     let storage = state.storage.clone();
+    let hot = state.hot.clone();
     let pricing = state.pricing.clone();
     let key_id = key.id.clone();
     let principal_id = key.principal.id.clone();
     let attempts_for_log = attempts.clone();
+    let reservation_day = reservation.day;
+    let reservation_cost = reservation.estimated_cost_usd;
+    let reservation_enforced = reservation.enforced;
 
     tokio::spawn(async move {
         let mut byte_stream = provider_stream.byte_stream;
@@ -214,8 +236,13 @@ async fn stream_response(
             attempts: attempts_for_log,
         };
 
-        let day = Utc::now().date_naive();
-        if let Err(e) = storage.add_spend(&key_id, day, cost).await {
+        if reservation_enforced {
+            let delta = cost - reservation_cost;
+            if let Err(e) = hot.settle_budget(&key_id, reservation_day, delta).await {
+                tracing::warn!(?e, key_id = %key_id, "failed to settle hot budget after stream");
+            }
+        }
+        if let Err(e) = storage.add_spend(&key_id, reservation_day, cost).await {
             tracing::warn!(?e, key_id = %key_id, "failed to add spend after stream");
         }
         if let Err(e) = storage.append_request_log(entry).await {
@@ -236,6 +263,21 @@ async fn stream_response(
     response
         .body(body)
         .map_err(|e| ChatError::Internal(format!("build streaming response: {}", e)))
+}
+
+async fn settle_reservation(
+    state: &AppState,
+    key_id: &str,
+    reservation: &quota::QuotaReservation,
+    actual_cost: f64,
+) {
+    if !reservation.enforced {
+        return;
+    }
+    let delta = actual_cost - reservation.estimated_cost_usd;
+    if let Err(e) = state.hot.settle_budget(key_id, reservation.day, delta).await {
+        tracing::warn!(?e, %key_id, "hot store settle_budget failed");
+    }
 }
 
 fn attach_route_headers(

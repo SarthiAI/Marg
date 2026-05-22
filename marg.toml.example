@@ -9,12 +9,33 @@ bind = "0.0.0.0:8080"
 max_body_bytes = 1048576
 
 [storage]
-# Currently only "sqlite" is supported. Postgres and Redis arrive in P03.
+# Choose "sqlite" (default, single file) or "postgres" (production).
 backend = "sqlite"
+# Path for the sqlite backend. Ignored for postgres.
 path = "./marg.db"
+# DSN for the postgres backend. Required when backend = "postgres".
+# Secret reference shapes: plain:<value>, env:<NAME>, file:<path>.
+# Examples:
+#   dsn = "postgres://marg:secret@localhost:5432/marg"
+#   dsn = "env:MARG_PG_DSN"
+#   dsn = "file:/etc/marg/pg.dsn"
+
+# Optional hot store (used for budget reservation and per-key rpm rate limits).
+# Required for clustered deployments where multiple Marg instances share state.
+# When omitted, a per-process in-memory hot store is used.
+# [storage.hot]
+# backend = "redis"
+# url = "redis://localhost:6379"
+# # Optional key namespace for sharing one Redis across multiple Marg fleets.
+# key_prefix = "marg"
 
 # Default sample uses OpenAI. For local benchmarking, set base_url to the
 # provider stub: base_url = "http://127.0.0.1:18081".
+#
+# All api_key fields accept secret references:
+#   plain:<value>  (default if no scheme prefix)
+#   env:<NAME>     read from environment variable
+#   file:<path>    read trimmed file contents (HashiCorp Vault / SSM workflow)
 [providers.openai]
 api_key = "REPLACE_WITH_REAL_OR_STUB_KEY"
 base_url = "https://api.openai.com"

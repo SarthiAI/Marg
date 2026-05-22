@@ -9,10 +9,10 @@ repository.workspace = true
 description = "Marg storage trait and backend implementations (SQLite default, Postgres recommended, Redis hot store)"
 
 [features]
-default = ["storage-sqlite"]
-storage-sqlite = ["dep:sqlx"]
-storage-postgres = []
-storage-redis = []
+default = ["sqlite", "postgres", "redis-hot"]
+sqlite = ["dep:sqlx", "sqlx/sqlite"]
+postgres = ["dep:sqlx", "sqlx/postgres"]
+redis-hot = ["dep:redis", "dep:deadpool-redis"]
 
 [dependencies]
 marg-core = { workspace = true }
@@ -22,7 +22,10 @@ chrono = { workspace = true }
 uuid = { workspace = true }
 serde_json = { workspace = true }
 tracing = { workspace = true }
+tokio = { workspace = true }
 sqlx = { workspace = true, optional = true }
+redis = { workspace = true, optional = true }
+deadpool-redis = { workspace = true, optional = true }
 
 [lints]
 workspace = true

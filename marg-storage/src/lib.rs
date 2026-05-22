@@ -4,11 +4,25 @@ use thiserror::Error;
 
 use marg_core::{BudgetSpec, MargKey, NewKey, RequestLogEntry};
 
-#[cfg(feature = "storage-sqlite")]
-pub mod sqlite;
+pub mod hot;
+pub mod hot_local;
 
-#[cfg(feature = "storage-sqlite")]
+#[cfg(feature = "sqlite")]
+pub mod sqlite;
+#[cfg(feature = "postgres")]
+pub mod postgres;
+#[cfg(feature = "redis-hot")]
+pub mod hot_redis;
+
+#[cfg(feature = "sqlite")]
 pub use sqlite::SqliteStorage;
+#[cfg(feature = "postgres")]
+pub use postgres::PostgresStorage;
+#[cfg(feature = "redis-hot")]
+pub use hot_redis::RedisHotStore;
+
+pub use hot::{BudgetReservation, HotStore, HotStoreError};
+pub use hot_local::LocalHotStore;
 
 #[derive(Debug, Error)]
 pub enum StorageError {
@@ -24,6 +38,10 @@ pub enum StorageError {
 
 #[async_trait]
 pub trait Storage: Send + Sync {
+    fn backend_name(&self) -> &'static str;
+    async fn ping(&self) -> Result<(), StorageError>;
+    async fn migrate(&self) -> Result<(), StorageError>;
+
     async fn create_key(&self, new: NewKey) -> Result<MargKey, StorageError>;
     async fn get_key_by_hash(&self, hash: &str) -> Result<Option<MargKey>, StorageError>;
     async fn get_key_by_id(&self, id: &str) -> Result<Option<MargKey>, StorageError>;

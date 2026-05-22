@@ -6,12 +6,13 @@ pub mod pricing;
 pub mod principal;
 pub mod request_log;
 pub mod routing;
+pub mod secret;
 
 pub use budget::{BudgetCounter, BudgetSpec};
 pub use config::{
     AnthropicProviderConfig, BedrockProviderConfig, Config, CorsConfig, GoogleProviderConfig,
-    OpenAiProviderConfig, PricingEntry, ProvidersConfig, SecurityConfig, ServerConfig,
-    StorageConfig,
+    HotStoreConfig, OpenAiProviderConfig, PricingEntry, ProvidersConfig, SecurityConfig,
+    ServerConfig, StorageConfig,
 };
 pub use error::ConfigError;
 pub use key::{KeyStatus, MargKey, MargToken, NewKey, TOKEN_PREFIX};

@@ -6,13 +6,14 @@ use std::time::Duration;
 
 use marg_core::{BudgetSpec, Config, MargKey, PricingTable, RoutingEngine, SecurityConfig};
 use marg_providers::ChatCompletionsClient;
-use marg_storage::Storage;
+use marg_storage::{HotStore, Storage};
 
 pub type ProviderRegistry = HashMap<String, Arc<dyn ChatCompletionsClient>>;
 
 #[derive(Clone)]
 pub struct AppState {
     pub storage: Arc<dyn Storage>,
+    pub hot: Arc<dyn HotStore>,
     pub providers: Arc<ProviderRegistry>,
     pub routing: Arc<RoutingEngine>,
     pub pricing: Arc<ArcSwap<PricingTable>>,
@@ -29,6 +30,7 @@ pub struct CachedKey {
 impl AppState {
     pub fn new(
         storage: Arc<dyn Storage>,
+        hot: Arc<dyn HotStore>,
         providers: ProviderRegistry,
         routing: RoutingEngine,
         pricing: PricingTable,
@@ -40,6 +42,7 @@ impl AppState {
             .build();
         Self {
             storage,
+            hot,
             providers: Arc::new(providers),
             routing: Arc::new(routing),
             pricing: Arc::new(ArcSwap::from_pointee(pricing)),

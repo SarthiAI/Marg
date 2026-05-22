@@ -22,8 +22,14 @@ pub enum ChatError {
     #[error("budget exceeded: spent {spent_usd} of {daily_usd} USD")]
     BudgetExceeded { spent_usd: f64, daily_usd: f64 },
 
+    #[error("rate limit exceeded: rpm {rpm}")]
+    RateLimited { rpm: u32 },
+
     #[error("storage error: {0}")]
     Storage(String),
+
+    #[error("hot store error: {0}")]
+    HotStore(String),
 
     #[error("provider error: {0}")]
     Provider(#[from] ProviderError),
@@ -89,6 +95,7 @@ impl IntoResponse for ChatError {
                 (StatusCode::UNAUTHORIZED, "unauthorized")
             }
             ChatError::BudgetExceeded { .. } => (StatusCode::TOO_MANY_REQUESTS, "budget_exceeded"),
+            ChatError::RateLimited { .. } => (StatusCode::TOO_MANY_REQUESTS, "rate_limited"),
             ChatError::BadRequest(_) => (StatusCode::BAD_REQUEST, "bad_request"),
             ChatError::NoRoute { .. } | ChatError::UnknownProvider(_) => {
                 (StatusCode::BAD_REQUEST, "no_route")
@@ -96,6 +103,7 @@ impl IntoResponse for ChatError {
             ChatError::Storage(_) | ChatError::Internal(_) => {
                 (StatusCode::SERVICE_UNAVAILABLE, "internal_error")
             }
+            ChatError::HotStore(_) => (StatusCode::SERVICE_UNAVAILABLE, "hot_store_unreachable"),
             ChatError::Provider(err) | ChatError::ProviderWithAttempts { source: err, .. } => {
                 if matches!(err, ProviderError::Timeout) {
                     (StatusCode::GATEWAY_TIMEOUT, "upstream_timeout")

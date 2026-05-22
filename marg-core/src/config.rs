@@ -51,6 +51,10 @@ pub struct StorageConfig {
     pub backend: String,
     #[serde(default = "default_sqlite_path")]
     pub path: String,
+    #[serde(default)]
+    pub dsn: Option<String>,
+    #[serde(default)]
+    pub hot: Option<HotStoreConfig>,
 }
 
 fn default_storage_backend() -> String { "sqlite".to_string() }
@@ -58,9 +62,27 @@ fn default_sqlite_path() -> String { "./marg.db".to_string() }
 
 impl Default for StorageConfig {
     fn default() -> Self {
-        Self { backend: default_storage_backend(), path: default_sqlite_path() }
+        Self {
+            backend: default_storage_backend(),
+            path: default_sqlite_path(),
+            dsn: None,
+            hot: None,
+        }
     }
 }
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HotStoreConfig {
+    #[serde(default = "default_hot_backend")]
+    pub backend: String,
+    #[serde(default)]
+    pub url: Option<String>,
+    #[serde(default)]
+    pub key_prefix: Option<String>,
+}
+
+fn default_hot_backend() -> String { "redis".to_string() }
 
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -235,11 +257,44 @@ impl Config {
                 "server.max_body_bytes must be greater than 0".into(),
             ));
         }
-        if !matches!(self.storage.backend.as_str(), "sqlite") {
-            return Err(ConfigError::Validation(format!(
-                "storage.backend '{}' not supported in P02, only 'sqlite' is implemented (postgres + redis arrive in P03)",
-                self.storage.backend
-            )));
+        match self.storage.backend.as_str() {
+            "sqlite" => {
+                if self.storage.path.trim().is_empty() {
+                    return Err(ConfigError::Validation(
+                        "storage.path must be set when storage.backend = 'sqlite'".into(),
+                    ));
+                }
+            }
+            "postgres" => {
+                if self.storage.dsn.as_deref().map(str::trim).unwrap_or("").is_empty() {
+                    return Err(ConfigError::Validation(
+                        "storage.dsn must be set when storage.backend = 'postgres' (e.g. \"postgres://user:pass@host/db\")".into(),
+                    ));
+                }
+            }
+            other => {
+                return Err(ConfigError::Validation(format!(
+                    "storage.backend '{}' is not supported: choose 'sqlite' or 'postgres'",
+                    other
+                )));
+            }
+        }
+        if let Some(hot) = &self.storage.hot {
+            match hot.backend.as_str() {
+                "redis" => {
+                    if hot.url.as_deref().map(str::trim).unwrap_or("").is_empty() {
+                        return Err(ConfigError::Validation(
+                            "storage.hot.url must be set when storage.hot.backend = 'redis'".into(),
+                        ));
+                    }
+                }
+                other => {
+                    return Err(ConfigError::Validation(format!(
+                        "storage.hot.backend '{}' is not supported: choose 'redis' or omit the [storage.hot] block",
+                        other
+                    )));
+                }
+            }
         }
         Ok(())
     }
