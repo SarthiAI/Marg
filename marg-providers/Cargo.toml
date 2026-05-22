@@ -12,6 +12,14 @@ description = "Marg provider adapter trait and per-provider client implementatio
 marg-core = { workspace = true }
 async-trait = { workspace = true }
 thiserror = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+reqwest = { workspace = true }
+secrecy = { workspace = true }
+bytes = { workspace = true }
+futures = { workspace = true }
+futures-util = { workspace = true }
+tracing = { workspace = true }
 
 [lints]
 workspace = true

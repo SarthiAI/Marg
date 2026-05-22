@@ -3,33 +3,61 @@
 # below are used.
 
 [server]
-# Address the HTTP server binds to. Default: 0.0.0.0:8080.
+# Address the HTTP server binds to.
 bind = "0.0.0.0:8080"
+# Maximum request body size accepted on chat endpoints (bytes). Default 1 MiB.
+max_body_bytes = 1048576
 
-# The blocks below are documented but not yet honored. They land in later
-# phases. Listed here so operators can preview the shape of the final file.
+[storage]
+# Currently only "sqlite" is supported. Postgres and Redis arrive in P03.
+backend = "sqlite"
+path = "./marg.db"
 
-# Provider routing (P02)
-# -----------------------
+# Default sample uses OpenAI. For local benchmarking, set base_url to the
+# provider stub: base_url = "http://127.0.0.1:18081".
+[providers.openai]
+api_key = "REPLACE_WITH_REAL_OR_STUB_KEY"
+base_url = "https://api.openai.com"
+timeout_seconds = 120
+
+[security]
+# Marg never logs prompt or response bodies by default. Flip these only for
+# debugging in a private environment.
+log_prompts = false
+log_responses = false
+
+[cors]
+# Off by default. Operators serving the console UI from a different origin
+# enable and list the origins explicitly.
+enabled = false
+allowed_origins = []
+
+[rate_limits]
+# Default requests-per-minute applied when a key has rpm = 0. The full keyed
+# rate-limit enforcement path lives behind Redis in P03; P01 stores rpm on
+# the key for forward compatibility.
+default_rpm = 0
+
+# Pricing table overrides. Marg ships defaults for common OpenAI models.
+# Operators override per model here. Costs are USD per 1K tokens.
+# [[pricing]]
+# model = "gpt-4o"
+# input_per_1k_usd = 0.0025
+# output_per_1k_usd = 0.01
+
+# Provider routing (P02), distributed storage (P03), Kavach governance (P08).
+# Future block previews:
+#
 # [[routes]]
 # match.model = "gpt-4*"
 # primary = "openai"
 # fallback = ["anthropic:claude-opus-4"]
-
-# Storage backend (P01 default sqlite, P03 adds postgres + redis hot store)
-# -------------------------------------------------------------------------
-# [storage]
-# backend = "sqlite"
-# path = "./marg.db"
 #
 # [storage.hot]
 # backend = "redis"
 # url = "redis://localhost:6379"
-
-# Kavach governance layer (P08, Marg v2.0)
-# ----------------------------------------
+#
 # [kavach]
 # observe_only = true
 # keypair_path = "./marg.key"
 # audit_export_path = "./audit/"
-# audit_flush_seconds = 60

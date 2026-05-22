@@ -6,14 +6,27 @@ license.workspace = true
 rust-version.workspace = true
 authors.workspace = true
 repository.workspace = true
-description = "Deterministic fake LLM provider used by Marg benchmarks. Stub in P00, implemented in P01."
+description = "Deterministic OpenAI-compatible fake provider used by Marg benchmarks and local walkthroughs."
 
 [[bin]]
 name = "marg-provider-stub"
 path = "src/main.rs"
 
 [dependencies]
+tokio = { workspace = true }
+axum = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
 anyhow = { workspace = true }
+clap = { workspace = true }
+chrono = { workspace = true }
+uuid = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+bytes = { workspace = true }
+async-stream = { workspace = true }
+futures = { workspace = true }
+tokio-stream = { workspace = true }
 
 [lints]
 workspace = true

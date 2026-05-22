@@ -11,4 +11,7 @@ pub enum ConfigError {
         #[source]
         source: std::io::Error,
     },
+
+    #[error("config validation error: {0}")]
+    Validation(String),
 }

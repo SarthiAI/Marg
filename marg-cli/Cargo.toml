@@ -15,12 +15,14 @@ path = "src/main.rs"
 [dependencies]
 marg-core = { workspace = true }
 marg-server = { workspace = true }
+marg-storage = { workspace = true }
 tokio = { workspace = true }
 clap = { workspace = true }
 anyhow = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 serde_json = { workspace = true }
+chrono = { workspace = true }
 
 [lints]
 workspace = true

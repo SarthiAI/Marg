@@ -19,9 +19,14 @@ repository = "https://github.com/SarthiAI/marg"
 
 [workspace.dependencies]
 tokio = { version = "1", features = ["full"] }
-axum = "0.7"
-tower = "0.4"
-tower-http = { version = "0.5", features = ["trace"] }
+axum = { version = "0.7", features = ["macros"] }
+tower = { version = "0.4", features = ["util"] }
+tower-http = { version = "0.5", features = ["trace", "limit", "cors"] }
+hyper = "1"
+http = "1"
+http-body-util = "0.1"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream", "json", "http2"] }
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio-rustls", "sqlite", "chrono", "uuid", "macros", "migrate"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 toml = "0.8"
@@ -31,6 +36,20 @@ clap = { version = "4", features = ["derive"] }
 anyhow = "1"
 thiserror = "1"
 async-trait = "0.1"
+chrono = { version = "0.4", default-features = false, features = ["serde", "clock", "std"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+bytes = "1"
+futures = "0.3"
+futures-util = "0.3"
+tokio-stream = { version = "0.1", features = ["sync"] }
+moka = { version = "0.12", features = ["future"] }
+rand = "0.8"
+sha2 = "0.10"
+data-encoding = "2"
+secrecy = { version = "0.10", features = ["serde"] }
+arc-swap = "1"
+async-stream = "0.3"
+governor = { version = "0.7", default-features = false, features = ["std", "quanta"] }
 
 marg-core = { path = "marg-core" }
 marg-server = { path = "marg-server" }
