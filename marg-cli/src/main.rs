@@ -8,6 +8,15 @@ use tracing_subscriber::EnvFilter;
 use marg_core::{secret, BudgetSpec, Config, MargToken, NewKey, PrincipalKind};
 use marg_storage::{PostgresStorage, SqliteStorage, Storage};
 
+/// Which subcommand we are running. The server runs in JSON-log mode by
+/// default so logs flow straight into any modern log pipeline; CLI admin
+/// commands keep human-friendly compact output so the operator can read them.
+#[derive(Clone, Copy)]
+enum LogMode {
+    Server,
+    Cli,
+}
+
 #[derive(Parser)]
 #[command(name = "marg", version, about = "Marg: self-hosted AI gateway")]
 struct Cli {
@@ -113,8 +122,12 @@ enum LogCommand {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    install_tracing();
     let cli = Cli::parse();
+    let mode = match &cli.command {
+        Command::Start { .. } => LogMode::Server,
+        _ => LogMode::Cli,
+    };
+    install_tracing(mode);
     match cli.command {
         Command::Start { config } => marg_server::run(&config).await,
         Command::Version { verbose } => {
@@ -153,13 +166,30 @@ async fn main() -> Result<()> {
     }
 }
 
-fn install_tracing() {
+fn install_tracing(mode: LogMode) {
     let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
-    tracing_subscriber::fmt()
-        .with_env_filter(filter)
-        .with_target(false)
-        .compact()
-        .init();
+    let env_format = std::env::var("MARG_LOG_FORMAT").ok();
+    let use_json = match env_format.as_deref() {
+        Some("json") => true,
+        Some("text") | Some("compact") => false,
+        _ => matches!(mode, LogMode::Server),
+    };
+
+    if use_json {
+        tracing_subscriber::fmt()
+            .json()
+            .with_env_filter(filter)
+            .with_target(true)
+            .with_current_span(true)
+            .with_span_list(false)
+            .init();
+    } else {
+        tracing_subscriber::fmt()
+            .with_env_filter(filter)
+            .with_target(false)
+            .compact()
+            .init();
+    }
 }
 
 fn print_version(verbose: bool) {

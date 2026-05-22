@@ -1,6 +1,9 @@
 mod auth;
 mod chat;
 mod errors;
+mod metered_storage;
+pub mod metrics;
+pub mod observability;
 mod ops;
 mod proxy;
 mod quota;
@@ -10,6 +13,7 @@ mod sse;
 
 use anyhow::Context;
 use axum::Router;
+use axum::middleware;
 use axum::routing::{get, post};
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -23,6 +27,7 @@ use tower_http::cors::{Any, CorsLayer};
 use tower_http::limit::RequestBodyLimitLayer;
 use tower_http::trace::TraceLayer;
 
+pub use metrics::Metrics;
 pub use ops::version_info;
 pub use state::{AppState, ProviderRegistry};
 
@@ -30,8 +35,16 @@ pub async fn run(config_path: &str) -> anyhow::Result<()> {
     let cfg = Config::load(config_path)
         .with_context(|| format!("loading config from {}", config_path))?;
 
+    let metrics = Metrics::new();
+
     let storage = build_storage(&cfg).await?;
+    let storage: Arc<dyn Storage> =
+        Arc::new(metered_storage::MeteredStorage::new(storage, metrics.clone()));
+
     let hot = build_hot_store(&cfg).await?;
+    let hot: Arc<dyn HotStore> =
+        Arc::new(metered_storage::MeteredHotStore::new(hot, metrics.clone()));
+
     let providers = build_providers(&cfg)?;
     let registered: Vec<String> = providers.keys().cloned().collect();
     let routing = RoutingEngine::build(
@@ -49,6 +62,7 @@ pub async fn run(config_path: &str) -> anyhow::Result<()> {
         routing,
         pricing,
         cfg.security.clone(),
+        metrics,
     );
 
     let max_body = cfg.server.max_body_bytes;
@@ -57,8 +71,10 @@ pub async fn run(config_path: &str) -> anyhow::Result<()> {
         .route("/health", get(ops::health))
         .route("/ready", get(ops::ready))
         .route("/version", get(ops::version))
+        .route("/metrics", get(observability::metrics_handler))
         .route("/v1/chat/completions", post(chat::chat_completions))
         .with_state(state.clone())
+        .layer(middleware::from_fn(observability::request_context_layer))
         .layer(TraceLayer::new_for_http())
         .layer(RequestBodyLimitLayer::new(max_body));
 

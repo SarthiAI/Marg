@@ -12,7 +12,8 @@ bench/
 ├── data/               synthetic prompts, key fixtures, tool-call corpus (P01 onward)
 ├── scenarios/          k6 and shell scenario scripts (P01 onward)
 ├── rigs/               hardware-tier bring-up scripts (dev-laptop in P00, others later)
-└── results/            committed benchmark output per release
+├── results/            committed benchmark output per release
+└── report.py           generate REPORT.md per run and refresh BENCHMARKS.md
 ```
 
 ## Status
@@ -26,6 +27,22 @@ part of the workspace. Real scenarios and data corpus start landing in P01 per
 Per-phase exit criteria list the scenarios that must pass before the phase is
 `DONE`. Each scenario has a run command documented in its own file under
 `scenarios/`. The standing acceptance discipline is locked by ADR-008.
+
+## Per-run reporting
+
+Each rig's runner script writes scenario output under
+`results/<YYYY-MM-DD>-<git-sha>/<scenario-id>-<name>/` along with a
+`summary.json` describing the headline number and whether the acceptance gate
+passed. After a run completes:
+
+```
+bench/report.py bench/results/<run-id>
+```
+
+writes `REPORT.md` inside the run directory and refreshes the matching rows
+in the repo's `BENCHMARKS.md` so the published numbers always reflect the
+most recent passing run. `--no-update` prints the report without touching
+`BENCHMARKS.md`.
 
 ## Notes for operators of this folder
 

@@ -22,8 +22,12 @@ pub async fn call_with_failover_non_stream(
 ) -> Result<AttemptResult<ChatResponse>, ChatError> {
     let mut attempts: Vec<RouteAttempt> = Vec::new();
     let mut last_error: Option<ChatError> = None;
+    let mut last_provider: Option<String> = None;
     let chain: Vec<ResolvedTarget> = std::iter::once(primary).chain(fallbacks).collect();
     for target in chain {
+        if let Some(prev) = &last_provider {
+            state.metrics.record_failover(prev, &target.provider);
+        }
         let provider = resolve_client(state, &target.provider)?;
         let mut attempt_req = req.clone();
         attempt_req.set_target_model(&target.model);
@@ -48,6 +52,9 @@ pub async fn call_with_failover_non_stream(
                     });
                 }
                 let outcome = classify_status(resp.status);
+                state
+                    .metrics
+                    .record_provider_error(&target.provider, error_kind(outcome));
                 let error_msg = decode_body_excerpt(&resp.body);
                 attempts.push(RouteAttempt {
                     provider: target.provider.clone(),
@@ -71,10 +78,14 @@ pub async fn call_with_failover_non_stream(
                     body: resp.body,
                     attempts: Vec::new(),
                 });
+                last_provider = Some(target.provider.clone());
             }
             Err(err) => {
                 let latency_ms = started.elapsed().as_millis().min(u64::MAX as u128) as u64;
                 let outcome = classify_provider_error(&err);
+                state
+                    .metrics
+                    .record_provider_error(&target.provider, error_kind(outcome));
                 let status = match &err {
                     ProviderError::Upstream { status, .. } => *status,
                     ProviderError::Timeout => 504,
@@ -96,6 +107,7 @@ pub async fn call_with_failover_non_stream(
                     });
                 }
                 last_error = Some(ChatError::Provider(err));
+                last_provider = Some(target.provider.clone());
             }
         }
     }
@@ -113,8 +125,12 @@ pub async fn call_with_failover_stream(
 ) -> Result<AttemptResult<ChatStream>, ChatError> {
     let mut attempts: Vec<RouteAttempt> = Vec::new();
     let mut last_error: Option<ChatError> = None;
+    let mut last_provider: Option<String> = None;
     let chain: Vec<ResolvedTarget> = std::iter::once(primary).chain(fallbacks).collect();
     for target in chain {
+        if let Some(prev) = &last_provider {
+            state.metrics.record_failover(prev, &target.provider);
+        }
         let provider = resolve_client(state, &target.provider)?;
         let mut attempt_req = req.clone();
         attempt_req.set_target_model(&target.model);
@@ -139,6 +155,9 @@ pub async fn call_with_failover_stream(
                     });
                 }
                 let outcome = classify_status(stream.status);
+                state
+                    .metrics
+                    .record_provider_error(&target.provider, error_kind(outcome));
                 attempts.push(RouteAttempt {
                     provider: target.provider.clone(),
                     model: target.model.clone(),
@@ -154,10 +173,14 @@ pub async fn call_with_failover_stream(
                         attempts,
                     });
                 }
+                last_provider = Some(target.provider.clone());
             }
             Err(err) => {
                 let latency_ms = started.elapsed().as_millis().min(u64::MAX as u128) as u64;
                 let outcome = classify_provider_error(&err);
+                state
+                    .metrics
+                    .record_provider_error(&target.provider, error_kind(outcome));
                 let status = match &err {
                     ProviderError::Upstream { status, .. } => *status,
                     ProviderError::Timeout => 504,
@@ -179,6 +202,7 @@ pub async fn call_with_failover_stream(
                     });
                 }
                 last_error = Some(ChatError::Provider(err));
+                last_provider = Some(target.provider.clone());
             }
         }
     }
@@ -220,6 +244,18 @@ fn classify_provider_error(err: &ProviderError) -> AttemptOutcome {
             AttemptOutcome::Upstream4xx
         }
         ProviderError::Internal(_) => AttemptOutcome::Internal,
+    }
+}
+
+fn error_kind(outcome: AttemptOutcome) -> &'static str {
+    match outcome {
+        AttemptOutcome::Success => "success",
+        AttemptOutcome::Upstream5xx => "upstream_5xx",
+        AttemptOutcome::Upstream4xx => "upstream_4xx",
+        AttemptOutcome::Timeout => "timeout",
+        AttemptOutcome::Network => "network",
+        AttemptOutcome::Cancelled => "cancelled",
+        AttemptOutcome::Internal => "internal",
     }
 }
 

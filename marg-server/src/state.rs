@@ -8,6 +8,8 @@ use marg_core::{BudgetSpec, Config, MargKey, PricingTable, RoutingEngine, Securi
 use marg_providers::ChatCompletionsClient;
 use marg_storage::{HotStore, Storage};
 
+use crate::metrics::Metrics;
+
 pub type ProviderRegistry = HashMap<String, Arc<dyn ChatCompletionsClient>>;
 
 #[derive(Clone)]
@@ -19,6 +21,7 @@ pub struct AppState {
     pub pricing: Arc<ArcSwap<PricingTable>>,
     pub security: SecurityConfig,
     pub key_cache: Cache<String, CachedKey>,
+    pub metrics: Arc<Metrics>,
 }
 
 #[derive(Clone, Debug)]
@@ -35,6 +38,7 @@ impl AppState {
         routing: RoutingEngine,
         pricing: PricingTable,
         security: SecurityConfig,
+        metrics: Arc<Metrics>,
     ) -> Self {
         let key_cache = Cache::builder()
             .max_capacity(50_000)
@@ -48,6 +52,7 @@ impl AppState {
             pricing: Arc::new(ArcSwap::from_pointee(pricing)),
             security,
             key_cache,
+            metrics,
         }
     }
 }
