@@ -1,0 +1,23 @@
+[package]
+name = "marg-storage"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Marg storage trait and backend implementations (SQLite default, Postgres recommended, Redis hot store)"
+
+[features]
+default = ["storage-sqlite"]
+storage-sqlite = []
+storage-postgres = []
+storage-redis = []
+
+[dependencies]
+marg-core = { workspace = true }
+async-trait = { workspace = true }
+thiserror = { workspace = true }
+
+[lints]
+workspace = true

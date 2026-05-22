@@ -1,0 +1,35 @@
+# Marg configuration. Drop this at ./marg.toml or point to it with
+# `marg start --config /path/to/marg.toml`. If the file is missing, defaults
+# below are used.
+
+[server]
+# Address the HTTP server binds to. Default: 0.0.0.0:8080.
+bind = "0.0.0.0:8080"
+
+# The blocks below are documented but not yet honored. They land in later
+# phases. Listed here so operators can preview the shape of the final file.
+
+# Provider routing (P02)
+# -----------------------
+# [[routes]]
+# match.model = "gpt-4*"
+# primary = "openai"
+# fallback = ["anthropic:claude-opus-4"]
+
+# Storage backend (P01 default sqlite, P03 adds postgres + redis hot store)
+# -------------------------------------------------------------------------
+# [storage]
+# backend = "sqlite"
+# path = "./marg.db"
+#
+# [storage.hot]
+# backend = "redis"
+# url = "redis://localhost:6379"
+
+# Kavach governance layer (P08, Marg v2.0)
+# ----------------------------------------
+# [kavach]
+# observe_only = true
+# keypair_path = "./marg.key"
+# audit_export_path = "./audit/"
+# audit_flush_seconds = 60

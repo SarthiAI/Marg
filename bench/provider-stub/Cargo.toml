@@ -1,0 +1,19 @@
+[package]
+name = "marg-provider-stub"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Deterministic fake LLM provider used by Marg benchmarks. Stub in P00, implemented in P01."
+
+[[bin]]
+name = "marg-provider-stub"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = { workspace = true }
+
+[lints]
+workspace = true

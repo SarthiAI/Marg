@@ -1,0 +1,26 @@
+[package]
+name = "marg-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Marg AI gateway command-line entry point"
+
+[[bin]]
+name = "marg"
+path = "src/main.rs"
+
+[dependencies]
+marg-core = { workspace = true }
+marg-server = { workspace = true }
+tokio = { workspace = true }
+clap = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+serde_json = { workspace = true }
+
+[lints]
+workspace = true
