@@ -1,16 +1,20 @@
 use arc_swap::ArcSwap;
 use moka::future::Cache;
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use marg_core::{BudgetSpec, Config, MargKey, PricingTable, SecurityConfig};
+use marg_core::{BudgetSpec, Config, MargKey, PricingTable, RoutingEngine, SecurityConfig};
 use marg_providers::ChatCompletionsClient;
 use marg_storage::Storage;
+
+pub type ProviderRegistry = HashMap<String, Arc<dyn ChatCompletionsClient>>;
 
 #[derive(Clone)]
 pub struct AppState {
     pub storage: Arc<dyn Storage>,
-    pub provider: Arc<dyn ChatCompletionsClient>,
+    pub providers: Arc<ProviderRegistry>,
+    pub routing: Arc<RoutingEngine>,
     pub pricing: Arc<ArcSwap<PricingTable>>,
     pub security: SecurityConfig,
     pub key_cache: Cache<String, CachedKey>,
@@ -25,7 +29,8 @@ pub struct CachedKey {
 impl AppState {
     pub fn new(
         storage: Arc<dyn Storage>,
-        provider: Arc<dyn ChatCompletionsClient>,
+        providers: ProviderRegistry,
+        routing: RoutingEngine,
         pricing: PricingTable,
         security: SecurityConfig,
     ) -> Self {
@@ -35,7 +40,8 @@ impl AppState {
             .build();
         Self {
             storage,
-            provider,
+            providers: Arc::new(providers),
+            routing: Arc::new(routing),
             pricing: Arc::new(ArcSwap::from_pointee(pricing)),
             security,
             key_cache,
@@ -44,7 +50,7 @@ impl AppState {
 }
 
 pub fn build_pricing(cfg: &Config) -> PricingTable {
-    let mut table = PricingTable::defaults_openai();
+    let mut table = PricingTable::defaults_all();
     for entry in &cfg.pricing {
         table.insert(&entry.model, entry.price());
     }

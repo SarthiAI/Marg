@@ -5,7 +5,7 @@ use std::pin::Pin;
 
 use crate::error::ProviderError;
 
-pub type ProviderByteStream = Pin<Box<dyn Stream<Item = Result<Bytes, reqwest::Error>> + Send>>;
+pub type ProviderByteStream = Pin<Box<dyn Stream<Item = Result<Bytes, std::io::Error>> + Send>>;
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, Copy)]
 pub struct ChatUsage {
@@ -51,20 +51,60 @@ impl ChatRequest {
         })
     }
 
-    pub fn ensure_stream_usage(&mut self) {
-        if !self.stream { return; }
+    pub fn set_target_model(&mut self, model: &str) {
+        self.model = model.to_string();
         if let Some(obj) = self.raw.as_object_mut() {
-            let entry = obj.entry("stream_options".to_string()).or_insert(serde_json::json!({}));
+            obj.insert("model".to_string(), serde_json::Value::String(model.to_string()));
+        }
+    }
+
+    pub fn ensure_stream_usage(&mut self) {
+        if !self.stream {
+            return;
+        }
+        if let Some(obj) = self.raw.as_object_mut() {
+            let entry = obj
+                .entry("stream_options".to_string())
+                .or_insert(serde_json::json!({}));
             if let Some(opts) = entry.as_object_mut() {
                 opts.entry("include_usage".to_string())
                     .or_insert(serde_json::Value::Bool(true));
             }
         }
     }
+
+    pub fn messages(&self) -> &[serde_json::Value] {
+        self.raw
+            .get("messages")
+            .and_then(|v| v.as_array())
+            .map(|a| a.as_slice())
+            .unwrap_or(&[])
+    }
+
+    pub fn temperature(&self) -> Option<f64> {
+        self.raw.get("temperature").and_then(|v| v.as_f64())
+    }
+
+    pub fn top_p(&self) -> Option<f64> {
+        self.raw.get("top_p").and_then(|v| v.as_f64())
+    }
+
+    pub fn stop_sequences(&self) -> Vec<String> {
+        match self.raw.get("stop") {
+            Some(serde_json::Value::String(s)) => vec![s.clone()],
+            Some(serde_json::Value::Array(arr)) => arr
+                .iter()
+                .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                .collect(),
+            _ => Vec::new(),
+        }
+    }
 }
 
 fn collect_input_chars(raw: &serde_json::Value) -> usize {
-    let Some(messages) = raw.get("messages").and_then(|v| v.as_array()) else { return 0; };
+    let Some(messages) = raw.get("messages").and_then(|v| v.as_array()) else {
+        return 0;
+    };
     let mut total = 0usize;
     for msg in messages {
         if let Some(content) = msg.get("content") {

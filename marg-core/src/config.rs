@@ -3,6 +3,7 @@ use std::path::Path;
 
 use crate::error::ConfigError;
 use crate::pricing::ModelPrice;
+use crate::routing::RouteSpec;
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -21,6 +22,8 @@ pub struct Config {
     pub rate_limits: RateLimitsConfig,
     #[serde(default)]
     pub pricing: Vec<PricingEntry>,
+    #[serde(default, rename = "routes")]
+    pub routes: Vec<RouteSpec>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -63,6 +66,11 @@ impl Default for StorageConfig {
 #[serde(deny_unknown_fields)]
 pub struct ProvidersConfig {
     pub openai: Option<OpenAiProviderConfig>,
+    pub anthropic: Option<AnthropicProviderConfig>,
+    pub google: Option<GoogleProviderConfig>,
+    pub bedrock: Option<BedrockProviderConfig>,
+    #[serde(default)]
+    pub default: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -77,6 +85,60 @@ pub struct OpenAiProviderConfig {
 
 fn default_openai_base_url() -> String { "https://api.openai.com".to_string() }
 fn default_provider_timeout_seconds() -> u64 { 120 }
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AnthropicProviderConfig {
+    pub api_key: String,
+    #[serde(default = "default_anthropic_base_url")]
+    pub base_url: String,
+    #[serde(default = "default_anthropic_version")]
+    pub api_version: String,
+    #[serde(default = "default_anthropic_default_max_tokens")]
+    pub default_max_tokens: u32,
+    #[serde(default = "default_provider_timeout_seconds")]
+    pub timeout_seconds: u64,
+}
+
+fn default_anthropic_base_url() -> String { "https://api.anthropic.com".to_string() }
+fn default_anthropic_version() -> String { "2023-06-01".to_string() }
+fn default_anthropic_default_max_tokens() -> u32 { 1024 }
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GoogleProviderConfig {
+    pub api_key: String,
+    #[serde(default = "default_google_base_url")]
+    pub base_url: String,
+    #[serde(default = "default_google_api_version")]
+    pub api_version: String,
+    #[serde(default = "default_provider_timeout_seconds")]
+    pub timeout_seconds: u64,
+}
+
+fn default_google_base_url() -> String { "https://generativelanguage.googleapis.com".to_string() }
+fn default_google_api_version() -> String { "v1beta".to_string() }
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BedrockProviderConfig {
+    pub region: String,
+    #[serde(default)]
+    pub access_key_id: Option<String>,
+    #[serde(default)]
+    pub secret_access_key: Option<String>,
+    #[serde(default)]
+    pub session_token: Option<String>,
+    #[serde(default = "default_bedrock_default_max_tokens")]
+    pub default_max_tokens: u32,
+    #[serde(default = "default_bedrock_anthropic_version")]
+    pub anthropic_version: String,
+    #[serde(default = "default_provider_timeout_seconds")]
+    pub timeout_seconds: u64,
+}
+
+fn default_bedrock_default_max_tokens() -> u32 { 1024 }
+fn default_bedrock_anthropic_version() -> String { "bedrock-2023-05-31".to_string() }
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -148,6 +210,7 @@ impl Default for Config {
             cors: CorsConfig::default(),
             rate_limits: RateLimitsConfig::default(),
             pricing: Vec::new(),
+            routes: Vec::new(),
         }
     }
 }
@@ -174,10 +237,19 @@ impl Config {
         }
         if !matches!(self.storage.backend.as_str(), "sqlite") {
             return Err(ConfigError::Validation(format!(
-                "storage.backend '{}' not supported in P01, only 'sqlite' is implemented (postgres + redis arrive in P03)",
+                "storage.backend '{}' not supported in P02, only 'sqlite' is implemented (postgres + redis arrive in P03)",
                 self.storage.backend
             )));
         }
         Ok(())
+    }
+
+    pub fn registered_providers(&self) -> Vec<String> {
+        let mut out = Vec::new();
+        if self.providers.openai.is_some() { out.push("openai".to_string()); }
+        if self.providers.anthropic.is_some() { out.push("anthropic".to_string()); }
+        if self.providers.google.is_some() { out.push("google".to_string()); }
+        if self.providers.bedrock.is_some() { out.push("bedrock".to_string()); }
+        out
     }
 }

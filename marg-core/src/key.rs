@@ -89,6 +89,7 @@ pub struct MargKey {
     pub token_hash: String,
     pub token_prefix: String,
     pub principal: Principal,
+    pub team: Option<String>,
     pub status: KeyStatus,
     pub created_at: DateTime<Utc>,
     pub revoked_at: Option<DateTime<Utc>>,
@@ -101,6 +102,7 @@ pub struct NewKey {
     pub token_prefix: String,
     pub principal_id: String,
     pub principal_kind: PrincipalKind,
+    pub team: Option<String>,
     pub created_at: DateTime<Utc>,
 }
 
@@ -112,7 +114,13 @@ impl NewKey {
             token_prefix: token.display_prefix(),
             principal_id,
             principal_kind: kind,
+            team: None,
             created_at: Utc::now(),
         }
+    }
+
+    pub fn with_team(mut self, team: Option<String>) -> Self {
+        self.team = team.filter(|t| !t.trim().is_empty());
+        self
     }
 }

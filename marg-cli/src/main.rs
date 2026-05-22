@@ -61,6 +61,8 @@ enum KeysCommand {
         daily_budget_usd: f64,
         #[arg(long, default_value_t = 0)]
         rpm: u32,
+        #[arg(long)]
+        team: Option<String>,
         #[arg(long, default_value = "./marg.toml")]
         config: String,
     },
@@ -127,8 +129,9 @@ async fn main() -> Result<()> {
                 kind,
                 daily_budget_usd,
                 rpm,
+                team,
                 config,
-            } => keys_create(&config, &principal_id, &kind, daily_budget_usd, rpm).await,
+            } => keys_create(&config, &principal_id, &kind, daily_budget_usd, rpm, team).await,
             KeysCommand::List { config } => keys_list(&config).await,
             KeysCommand::Revoke { id, config } => keys_revoke(&config, &id).await,
         },
@@ -192,11 +195,12 @@ async fn keys_create(
     kind_str: &str,
     daily_budget_usd: f64,
     rpm: u32,
+    team: Option<String>,
 ) -> Result<()> {
     let storage = open_storage(config_path).await?;
     let kind = PrincipalKind::from_str(kind_str).map_err(|e| anyhow!(e))?;
     let token = MargToken::generate();
-    let new = NewKey::build(principal_id.to_string(), kind, &token);
+    let new = NewKey::build(principal_id.to_string(), kind, &token).with_team(team);
     let key_id = new.id.clone();
     let saved = storage.create_key(new).await.context("inserting key")?;
     storage
@@ -210,6 +214,7 @@ async fn keys_create(
 
     println!("KEY ID:        {}", saved.id);
     println!("PRINCIPAL:     {} ({})", saved.principal.id, saved.principal.kind);
+    println!("TEAM:          {}", saved.team.as_deref().unwrap_or("(none)"));
     println!("CREATED:       {}", saved.created_at.to_rfc3339());
     println!("DAILY BUDGET:  {} USD", daily_budget_usd);
     println!("RPM:           {}", rpm);
@@ -230,16 +235,17 @@ async fn keys_list(config_path: &str) -> Result<()> {
         return Ok(());
     }
     println!(
-        "{:<36}  {:<24}  {:<8}  {:<8}  {:<20}  {}",
-        "id", "principal", "kind", "status", "created_at", "token_prefix"
+        "{:<36}  {:<24}  {:<8}  {:<8}  {:<14}  {:<20}  {}",
+        "id", "principal", "kind", "status", "team", "created_at", "token_prefix"
     );
     for k in keys {
         println!(
-            "{:<36}  {:<24}  {:<8}  {:<8}  {:<20}  {}",
+            "{:<36}  {:<24}  {:<8}  {:<8}  {:<14}  {:<20}  {}",
             k.id,
             k.principal.id,
             k.principal.kind,
             k.status,
+            k.team.as_deref().unwrap_or("-"),
             k.created_at.to_rfc3339(),
             k.token_prefix,
         );
@@ -306,12 +312,17 @@ async fn log_tail(config_path: &str, key_id: Option<&str>, limit: u32) -> Result
         return Ok(());
     }
     println!(
-        "{:<24}  {:<36}  {:<10}  {:<18}  {:>6}  {:>10}  {:>10}  {:>4}",
-        "timestamp", "key_id", "provider", "model", "in", "out", "cost_usd", "ms"
+        "{:<24}  {:<36}  {:<10}  {:<22}  {:>6}  {:>10}  {:>10}  {:>4}  {:>4}",
+        "timestamp", "key_id", "provider", "model", "in", "out", "cost_usd", "ms", "fovr"
     );
     for e in entries {
+        let failovers = e
+            .attempts
+            .iter()
+            .filter(|a| !matches!(a.outcome, marg_core::AttemptOutcome::Success))
+            .count();
         println!(
-            "{:<24}  {:<36}  {:<10}  {:<18}  {:>6}  {:>10}  {:>10.6}  {:>4}",
+            "{:<24}  {:<36}  {:<10}  {:<22}  {:>6}  {:>10}  {:>10.6}  {:>4}  {:>4}",
             e.timestamp.to_rfc3339(),
             e.key_id,
             e.provider,
@@ -320,6 +331,7 @@ async fn log_tail(config_path: &str, key_id: Option<&str>, limit: u32) -> Result
             e.output_tokens,
             e.cost_usd,
             e.latency_ms,
+            failovers,
         );
     }
     Ok(())

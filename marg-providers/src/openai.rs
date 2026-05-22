@@ -1,5 +1,4 @@
 use async_trait::async_trait;
-use bytes::Bytes;
 use futures_util::StreamExt;
 use reqwest::Client;
 use secrecy::{ExposeSecret, SecretString};
@@ -77,11 +76,12 @@ impl ChatCompletionsClient for OpenAIClient {
             .send()
             .await?;
         let status = resp.status().as_u16();
-        let byte_stream: futures::stream::BoxStream<'static, Result<Bytes, reqwest::Error>> =
-            resp.bytes_stream().boxed();
-        Ok(ChatStream {
-            status,
-            byte_stream,
-        })
+        let upstream = resp.bytes_stream();
+        let byte_stream = upstream
+            .map(|chunk| {
+                chunk.map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))
+            })
+            .boxed();
+        Ok(ChatStream { status, byte_stream })
     }
 }

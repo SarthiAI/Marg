@@ -50,6 +50,8 @@ secrecy = { version = "0.10", features = ["serde"] }
 arc-swap = "1"
 async-stream = "0.3"
 governor = { version = "0.7", default-features = false, features = ["std", "quanta"] }
+hmac = "0.12"
+percent-encoding = "2"
 
 marg-core = { path = "marg-core" }
 marg-server = { path = "marg-server" }

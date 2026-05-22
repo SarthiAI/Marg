@@ -28,6 +28,27 @@ impl PricingTable {
         t
     }
 
+    pub fn defaults_all() -> Self {
+        let mut t = Self::defaults_openai();
+        // Anthropic Claude (early 2026 list, USD per 1K tokens).
+        t.insert("claude-opus-4", ModelPrice { input_per_1k_usd: 0.015, output_per_1k_usd: 0.075 });
+        t.insert("claude-3-5-sonnet", ModelPrice { input_per_1k_usd: 0.003, output_per_1k_usd: 0.015 });
+        t.insert("claude-3-5-sonnet-20241022", ModelPrice { input_per_1k_usd: 0.003, output_per_1k_usd: 0.015 });
+        t.insert("claude-3-5-haiku", ModelPrice { input_per_1k_usd: 0.0008, output_per_1k_usd: 0.004 });
+        t.insert("claude-3-opus", ModelPrice { input_per_1k_usd: 0.015, output_per_1k_usd: 0.075 });
+        t.insert("claude-3-sonnet", ModelPrice { input_per_1k_usd: 0.003, output_per_1k_usd: 0.015 });
+        t.insert("claude-3-haiku", ModelPrice { input_per_1k_usd: 0.00025, output_per_1k_usd: 0.00125 });
+        // Google Gemini.
+        t.insert("gemini-1.5-pro", ModelPrice { input_per_1k_usd: 0.00125, output_per_1k_usd: 0.005 });
+        t.insert("gemini-1.5-flash", ModelPrice { input_per_1k_usd: 0.000075, output_per_1k_usd: 0.0003 });
+        t.insert("gemini-2.0-flash", ModelPrice { input_per_1k_usd: 0.000075, output_per_1k_usd: 0.0003 });
+        // Bedrock (Anthropic family on Bedrock pricing). Operators override per region.
+        t.insert("anthropic.claude-3-5-sonnet-20241022-v2:0", ModelPrice { input_per_1k_usd: 0.003, output_per_1k_usd: 0.015 });
+        t.insert("anthropic.claude-3-5-haiku-20241022-v1:0", ModelPrice { input_per_1k_usd: 0.0008, output_per_1k_usd: 0.004 });
+        t.insert("anthropic.claude-3-opus-20240229-v1:0", ModelPrice { input_per_1k_usd: 0.015, output_per_1k_usd: 0.075 });
+        t
+    }
+
     pub fn insert(&mut self, model: &str, price: ModelPrice) {
         self.by_model.insert(model.to_string(), price);
     }

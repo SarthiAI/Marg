@@ -1,8 +1,16 @@
+pub mod anthropic;
+pub mod bedrock;
 pub mod error;
+pub mod event_stream;
+pub mod google;
 pub mod openai;
 pub mod request;
+pub mod sigv4;
 
+pub use anthropic::AnthropicClient;
+pub use bedrock::BedrockClient;
 pub use error::ProviderError;
+pub use google::GoogleClient;
 pub use openai::OpenAIClient;
 pub use request::{ChatRequest, ChatResponse, ChatStream, ChatUsage};
 

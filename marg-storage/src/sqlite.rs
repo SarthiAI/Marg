@@ -81,6 +81,7 @@ fn row_to_key(row: &sqlx::sqlite::SqliteRow) -> Result<MargKey, StorageError> {
     let status: String = row.try_get("status").map_err(map_sqlx)?;
     let created_at: String = row.try_get("created_at").map_err(map_sqlx)?;
     let revoked_at: Option<String> = row.try_get("revoked_at").map_err(map_sqlx)?;
+    let team: Option<String> = row.try_get("team").map_err(map_sqlx)?;
     Ok(MargKey {
         id: row.try_get("id").map_err(map_sqlx)?,
         token_hash: row.try_get("token_hash").map_err(map_sqlx)?,
@@ -90,6 +91,7 @@ fn row_to_key(row: &sqlx::sqlite::SqliteRow) -> Result<MargKey, StorageError> {
             kind: PrincipalKind::from_str(&principal_kind)
                 .map_err(StorageError::Backend)?,
         },
+        team,
         status: KeyStatus::from_str(&status).map_err(StorageError::Backend)?,
         created_at: datetime_from_str(&created_at)?,
         revoked_at: match revoked_at {
@@ -104,8 +106,8 @@ impl Storage for SqliteStorage {
     async fn create_key(&self, new: NewKey) -> Result<MargKey, StorageError> {
         let created_at_str = new.created_at.to_rfc3339();
         sqlx::query(
-            "INSERT INTO keys (id, token_hash, token_prefix, principal_id, principal_kind, status, created_at) \
-             VALUES (?, ?, ?, ?, ?, 'active', ?)",
+            "INSERT INTO keys (id, token_hash, token_prefix, principal_id, principal_kind, status, created_at, team) \
+             VALUES (?, ?, ?, ?, ?, 'active', ?, ?)",
         )
         .bind(&new.id)
         .bind(&new.token_hash)
@@ -113,6 +115,7 @@ impl Storage for SqliteStorage {
         .bind(&new.principal_id)
         .bind(new.principal_kind.to_string())
         .bind(&created_at_str)
+        .bind(&new.team)
         .execute(&self.pool)
         .await
         .map_err(map_sqlx)?;
@@ -125,6 +128,7 @@ impl Storage for SqliteStorage {
                 id: new.principal_id,
                 kind: new.principal_kind,
             },
+            team: new.team,
             status: KeyStatus::Active,
             created_at: new.created_at,
             revoked_at: None,
@@ -240,10 +244,18 @@ impl Storage for SqliteStorage {
     }
 
     async fn append_request_log(&self, entry: RequestLogEntry) -> Result<(), StorageError> {
+        let attempts_json: Option<String> = if entry.attempts.is_empty() {
+            None
+        } else {
+            Some(
+                serde_json::to_string(&entry.attempts)
+                    .map_err(|e| StorageError::Backend(format!("serialize attempts: {}", e)))?,
+            )
+        };
         sqlx::query(
             "INSERT INTO request_log (id, timestamp, key_id, principal_id, provider, model, \
-             input_tokens, output_tokens, cost_usd, latency_ms, status, stream, error) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+             input_tokens, output_tokens, cost_usd, latency_ms, status, stream, error, attempts) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(&entry.id)
         .bind(entry.timestamp.to_rfc3339())
@@ -258,6 +270,7 @@ impl Storage for SqliteStorage {
         .bind(entry.status as i64)
         .bind(if entry.stream { 1i64 } else { 0i64 })
         .bind(&entry.error)
+        .bind(&attempts_json)
         .execute(&self.pool)
         .await
         .map_err(map_sqlx)?;
@@ -288,6 +301,12 @@ impl Storage for SqliteStorage {
             let ts_str: String = r.try_get("timestamp").map_err(map_sqlx)?;
             let timestamp = datetime_from_str(&ts_str)?;
             let stream_int: i64 = r.try_get("stream").map_err(map_sqlx)?;
+            let attempts_raw: Option<String> = r.try_get("attempts").map_err(map_sqlx)?;
+            let attempts = match attempts_raw.as_deref() {
+                Some(s) if !s.is_empty() => serde_json::from_str(s)
+                    .map_err(|e| StorageError::Backend(format!("decode attempts: {}", e)))?,
+                _ => Vec::new(),
+            };
             out.push(RequestLogEntry {
                 id: r.try_get("id").map_err(map_sqlx)?,
                 timestamp,
@@ -302,6 +321,7 @@ impl Storage for SqliteStorage {
                 status: r.try_get::<i64, _>("status").map_err(map_sqlx)? as u16,
                 stream: stream_int != 0,
                 error: r.try_get("error").map_err(map_sqlx)?,
+                attempts,
             });
         }
         Ok(out)

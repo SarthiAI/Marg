@@ -1227,17 +1227,24 @@ dependencies = [
 name = "marg-providers"
 version = "0.1.0"
 dependencies = [
+ "async-stream",
  "async-trait",
  "bytes",
+ "chrono",
+ "data-encoding",
  "futures",
  "futures-util",
+ "hmac",
  "marg-core",
+ "percent-encoding",
  "reqwest",
  "secrecy",
  "serde",
  "serde_json",
+ "sha2",
  "thiserror 1.0.69",
  "tracing",
+ "uuid",
 ]
 
 [[package]]

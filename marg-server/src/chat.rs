@@ -1,6 +1,6 @@
 use axum::body::Body;
 use axum::extract::State;
-use axum::http::{HeaderMap, StatusCode};
+use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::response::Response;
 use bytes::{Bytes, BytesMut};
 use chrono::Utc;
@@ -9,11 +9,12 @@ use std::time::Instant;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 
-use marg_core::RequestLogEntry;
+use marg_core::{RequestLogEntry, RouteAttempt};
 use marg_providers::{ChatRequest, ChatUsage};
 
 use crate::auth;
 use crate::errors::ChatError;
+use crate::proxy;
 use crate::quota;
 use crate::sse;
 use crate::state::AppState;
@@ -36,16 +37,25 @@ pub async fn chat_completions(
     let key = cached.key.clone();
     let budget = cached.budget.clone();
 
-    let req = ChatRequest::parse(&body)
-        .map_err(ChatError::Provider)?;
+    let req = ChatRequest::parse(&body).map_err(ChatError::Provider)?;
 
-    quota::check(&state, &key.id, &budget, &req).await?;
+    let pick_seed = uuid::Uuid::new_v4().as_u128() as u64;
+    let resolution = state
+        .routing
+        .resolve(&req.model, key.team.as_deref(), pick_seed)
+        .map_err(|e| match e {
+            marg_core::RoutingError::NoRouteMatched { model } => ChatError::NoRoute { model },
+            marg_core::RoutingError::MisconfiguredRoute(msg) => ChatError::Internal(msg),
+        })?;
+
+    let quota_model = resolution.primary.model.clone();
+    quota::check(&state, &key.id, &budget, &req, &quota_model).await?;
 
     let started = Instant::now();
     if req.stream {
-        stream_response(state, key, req, started).await
+        stream_response(state, key, req, resolution, started).await
     } else {
-        non_stream_response(state, key, req, started).await
+        non_stream_response(state, key, req, resolution, started).await
     }
 }
 
@@ -53,10 +63,20 @@ async fn non_stream_response(
     state: AppState,
     key: marg_core::MargKey,
     req: ChatRequest,
+    resolution: marg_core::RouteResolution,
     started: Instant,
 ) -> Result<Response, ChatError> {
-    let model_requested = req.model.clone();
-    let provider_resp = state.provider.chat_completion(req).await?;
+    let outcome = proxy::call_with_failover_non_stream(
+        &state,
+        resolution.primary.clone(),
+        resolution.fallbacks.clone(),
+        &req,
+    )
+    .await?;
+    let provider_resp = outcome.value;
+    let final_target = outcome.target;
+    let mut attempts = outcome.previous_failures;
+    attempts.push(outcome.log_entry);
     let latency_ms = started.elapsed().as_millis().min(u64::MAX as u128) as u64;
 
     let pricing = state.pricing.load();
@@ -66,13 +86,12 @@ async fn non_stream_response(
         provider_resp.usage.completion_tokens,
     );
 
-    let provider_name = state.provider.provider_name().to_string();
     let log = RequestLogEntry {
         id: uuid::Uuid::new_v4().to_string(),
         timestamp: Utc::now(),
         key_id: key.id.clone(),
         principal_id: key.principal.id.clone(),
-        provider: provider_name,
+        provider: final_target.provider.clone(),
         model: provider_resp.model.clone(),
         input_tokens: provider_resp.usage.prompt_tokens,
         output_tokens: provider_resp.usage.completion_tokens,
@@ -81,6 +100,7 @@ async fn non_stream_response(
         status: provider_resp.status,
         stream: false,
         error: None,
+        attempts: attempts.clone(),
     };
 
     let storage = state.storage.clone();
@@ -92,28 +112,40 @@ async fn non_stream_response(
     if let Err(e) = storage.append_request_log(log).await {
         tracing::warn!(?e, "failed to append request log after non-stream response");
     }
-    let _ = model_requested;
 
-    let status = StatusCode::from_u16(provider_resp.status)
-        .unwrap_or(StatusCode::OK);
-    let response = Response::builder()
+    let status = StatusCode::from_u16(provider_resp.status).unwrap_or(StatusCode::OK);
+    let mut response = Response::builder()
         .status(status)
-        .header("content-type", "application/json")
+        .header("content-type", "application/json");
+    if let Some(builder_headers) = response.headers_mut() {
+        attach_route_headers(builder_headers, &final_target, &attempts);
+    }
+    response
         .body(Body::from(provider_resp.body))
-        .map_err(|e| ChatError::Internal(format!("build response: {}", e)))?;
-    Ok(response)
+        .map_err(|e| ChatError::Internal(format!("build response: {}", e)))
 }
 
 async fn stream_response(
     state: AppState,
     key: marg_core::MargKey,
     req: ChatRequest,
+    resolution: marg_core::RouteResolution,
     started: Instant,
 ) -> Result<Response, ChatError> {
-    let model = req.model.clone();
-    let provider_name = state.provider.provider_name().to_string();
-    let upstream = state.provider.chat_completion_stream(req).await?;
-    let provider_status = upstream.status;
+    let outcome = proxy::call_with_failover_stream(
+        &state,
+        resolution.primary.clone(),
+        resolution.fallbacks.clone(),
+        &req,
+    )
+    .await?;
+    let provider_stream = outcome.value;
+    let final_target = outcome.target;
+    let mut attempts = outcome.previous_failures;
+    attempts.push(outcome.log_entry.clone());
+    let provider_status = provider_stream.status;
+    let route_model = final_target.model.clone();
+    let provider_name = final_target.provider.clone();
 
     let (tx, rx) = mpsc::unbounded_channel::<Result<Bytes, std::io::Error>>();
 
@@ -121,9 +153,10 @@ async fn stream_response(
     let pricing = state.pricing.clone();
     let key_id = key.id.clone();
     let principal_id = key.principal.id.clone();
+    let attempts_for_log = attempts.clone();
 
     tokio::spawn(async move {
-        let mut byte_stream = upstream.byte_stream;
+        let mut byte_stream = provider_stream.byte_stream;
         let mut buffer = BytesMut::new();
         let mut usage = ChatUsage::default();
         let mut stream_error: Option<String> = None;
@@ -147,7 +180,10 @@ async fn stream_response(
                 Err(e) => {
                     let msg = format!("upstream stream error: {}", e);
                     if client_alive {
-                        let _ = tx.send(Err(std::io::Error::new(std::io::ErrorKind::Other, msg.clone())));
+                        let _ = tx.send(Err(std::io::Error::new(
+                            std::io::ErrorKind::Other,
+                            msg.clone(),
+                        )));
                     }
                     stream_error = Some(msg);
                     break;
@@ -159,7 +195,7 @@ async fn stream_response(
         let latency_ms = started.elapsed().as_millis().min(u64::MAX as u128) as u64;
         let cost = pricing
             .load()
-            .cost_usd(&model, usage.prompt_tokens, usage.completion_tokens);
+            .cost_usd(&route_model, usage.prompt_tokens, usage.completion_tokens);
 
         let entry = RequestLogEntry {
             id: uuid::Uuid::new_v4().to_string(),
@@ -167,7 +203,7 @@ async fn stream_response(
             key_id: key_id.clone(),
             principal_id,
             provider: provider_name,
-            model: model.clone(),
+            model: route_model,
             input_tokens: usage.prompt_tokens,
             output_tokens: usage.completion_tokens,
             cost_usd: cost,
@@ -175,6 +211,7 @@ async fn stream_response(
             status: provider_status,
             stream: true,
             error: stream_error,
+            attempts: attempts_for_log,
         };
 
         let day = Utc::now().date_naive();
@@ -188,12 +225,35 @@ async fn stream_response(
 
     let status = StatusCode::from_u16(provider_status).unwrap_or(StatusCode::OK);
     let body = Body::from_stream(UnboundedReceiverStream::new(rx));
-    let response = Response::builder()
+    let mut response = Response::builder()
         .status(status)
         .header("content-type", "text/event-stream")
         .header("cache-control", "no-cache")
-        .header("connection", "keep-alive")
+        .header("connection", "keep-alive");
+    if let Some(builder_headers) = response.headers_mut() {
+        attach_route_headers(builder_headers, &final_target, &attempts);
+    }
+    response
         .body(body)
-        .map_err(|e| ChatError::Internal(format!("build streaming response: {}", e)))?;
-    Ok(response)
+        .map_err(|e| ChatError::Internal(format!("build streaming response: {}", e)))
+}
+
+fn attach_route_headers(
+    headers: &mut HeaderMap,
+    target: &marg_core::ResolvedTarget,
+    attempts: &[RouteAttempt],
+) {
+    if let Ok(v) = HeaderValue::from_str(&target.provider) {
+        headers.insert("x-marg-provider", v);
+    }
+    if let Ok(v) = HeaderValue::from_str(&target.model) {
+        headers.insert("x-marg-model", v);
+    }
+    let failovers = attempts.iter().filter(|a| !matches!(a.outcome, marg_core::AttemptOutcome::Success)).count();
+    if let Ok(v) = HeaderValue::from_str(&failovers.to_string()) {
+        headers.insert("x-marg-failovers", v);
+    }
+    if let Ok(v) = HeaderValue::from_str(&attempts.len().to_string()) {
+        headers.insert("x-marg-attempts", v);
+    }
 }

@@ -20,6 +20,38 @@ api_key = "REPLACE_WITH_REAL_OR_STUB_KEY"
 base_url = "https://api.openai.com"
 timeout_seconds = 120
 
+# Optional: pick a default provider when no route matches. If omitted,
+# Marg uses the first configured provider in this file.
+# [providers]
+# default = "openai"
+
+# Anthropic (Claude). Enable by uncommenting and dropping in your key.
+# [providers.anthropic]
+# api_key = "REPLACE_WITH_ANTHROPIC_KEY"
+# base_url = "https://api.anthropic.com"
+# api_version = "2023-06-01"
+# default_max_tokens = 1024
+# timeout_seconds = 120
+
+# Google Gemini.
+# [providers.google]
+# api_key = "REPLACE_WITH_GOOGLE_KEY"
+# base_url = "https://generativelanguage.googleapis.com"
+# api_version = "v1beta"
+# timeout_seconds = 120
+
+# AWS Bedrock. Credentials read from config or AWS_ACCESS_KEY_ID /
+# AWS_SECRET_ACCESS_KEY env vars. session_token optional for temporary
+# credentials.
+# [providers.bedrock]
+# region = "us-east-1"
+# access_key_id = ""
+# secret_access_key = ""
+# session_token = ""
+# default_max_tokens = 1024
+# anthropic_version = "bedrock-2023-05-31"
+# timeout_seconds = 120
+
 [security]
 # Marg never logs prompt or response bodies by default. Flip these only for
 # debugging in a private environment.
@@ -38,26 +70,38 @@ allowed_origins = []
 # the key for forward compatibility.
 default_rpm = 0
 
-# Pricing table overrides. Marg ships defaults for common OpenAI models.
-# Operators override per model here. Costs are USD per 1K tokens.
+# Pricing table overrides. Marg ships defaults for common OpenAI, Anthropic,
+# Google, and Bedrock models. Override per model here. Costs are USD per
+# 1K tokens.
 # [[pricing]]
 # model = "gpt-4o"
 # input_per_1k_usd = 0.0025
 # output_per_1k_usd = 0.01
 
-# Provider routing (P02), distributed storage (P03), Kavach governance (P08).
-# Future block previews:
+# Routing rules. Each [[routes]] block is evaluated top-to-bottom. The first
+# block whose `match` conditions are satisfied wins. Within a block:
+#   - `primary` is the first provider tried. Format is "provider" or
+#     "provider:model_override" (use the override when the upstream model
+#     name differs from what the client sent).
+#   - `fallback` is an ordered list. On a retriable failure (5xx, timeout,
+#     network), Marg tries each fallback once. No retry storms.
+#   - `split` is mutually exclusive with `primary`. Weighted distribution
+#     across providers, ideal for A/B comparisons.
+# If no route matches, Marg uses the default provider (see
+# [providers].default).
 #
 # [[routes]]
 # match.model = "gpt-4*"
 # primary = "openai"
-# fallback = ["anthropic:claude-opus-4"]
+# fallback = ["anthropic:claude-3-5-sonnet"]
 #
-# [storage.hot]
-# backend = "redis"
-# url = "redis://localhost:6379"
+# [[routes]]
+# match.model = "claude-*"
+# primary = "anthropic"
 #
-# [kavach]
-# observe_only = true
-# keypair_path = "./marg.key"
-# audit_export_path = "./audit/"
+# [[routes]]
+# match.team = "experimental"
+# split = [
+#   { provider = "openai", weight = 50 },
+#   { provider = "anthropic", weight = 50, model = "claude-3-5-sonnet" },
+# ]

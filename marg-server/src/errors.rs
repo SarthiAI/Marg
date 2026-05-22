@@ -1,9 +1,11 @@
 use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
+use bytes::Bytes;
 use serde_json::json;
 use thiserror::Error;
 
+use marg_core::RouteAttempt;
 use marg_providers::ProviderError;
 
 #[derive(Debug, Error)]
@@ -26,11 +28,58 @@ pub enum ChatError {
     #[error("provider error: {0}")]
     Provider(#[from] ProviderError),
 
+    #[error("provider {provider} error after {attempts} attempts: {source}", attempts = .attempts.len())]
+    ProviderWithAttempts {
+        provider: String,
+        #[source]
+        source: ProviderError,
+        attempts: Vec<RouteAttempt>,
+    },
+
+    #[error("upstream provider {provider} returned status {status} (non-retriable)")]
+    Upstream {
+        status: u16,
+        provider: String,
+        body: Bytes,
+        attempts: Vec<RouteAttempt>,
+    },
+
+    #[error("upstream stream from provider {provider} returned status {status}")]
+    UpstreamStream {
+        status: u16,
+        provider: String,
+        attempts: Vec<RouteAttempt>,
+    },
+
+    #[error("all upstream attempts failed ({count})", count = .attempts.len())]
+    AllAttemptsFailed {
+        attempts: Vec<RouteAttempt>,
+        last_error: Option<String>,
+    },
+
+    #[error("no route matched for model '{model}' and no default provider configured")]
+    NoRoute { model: String },
+
+    #[error("provider '{0}' is not configured")]
+    UnknownProvider(String),
+
     #[error("invalid request: {0}")]
     BadRequest(String),
 
     #[error("internal error: {0}")]
     Internal(String),
+}
+
+impl ChatError {
+    pub fn attempts(&self) -> Vec<RouteAttempt> {
+        match self {
+            ChatError::ProviderWithAttempts { attempts, .. } => attempts.clone(),
+            ChatError::Upstream { attempts, .. } => attempts.clone(),
+            ChatError::UpstreamStream { attempts, .. } => attempts.clone(),
+            ChatError::AllAttemptsFailed { attempts, .. } => attempts.clone(),
+            _ => Vec::new(),
+        }
+    }
 }
 
 impl IntoResponse for ChatError {
@@ -41,27 +90,42 @@ impl IntoResponse for ChatError {
             }
             ChatError::BudgetExceeded { .. } => (StatusCode::TOO_MANY_REQUESTS, "budget_exceeded"),
             ChatError::BadRequest(_) => (StatusCode::BAD_REQUEST, "bad_request"),
+            ChatError::NoRoute { .. } | ChatError::UnknownProvider(_) => {
+                (StatusCode::BAD_REQUEST, "no_route")
+            }
             ChatError::Storage(_) | ChatError::Internal(_) => {
                 (StatusCode::SERVICE_UNAVAILABLE, "internal_error")
             }
-            ChatError::Provider(err) => {
+            ChatError::Provider(err) | ChatError::ProviderWithAttempts { source: err, .. } => {
                 if matches!(err, ProviderError::Timeout) {
                     (StatusCode::GATEWAY_TIMEOUT, "upstream_timeout")
                 } else {
                     (StatusCode::BAD_GATEWAY, "upstream_error")
                 }
             }
+            ChatError::Upstream { status, .. } | ChatError::UpstreamStream { status, .. } => {
+                let s = StatusCode::from_u16(*status).unwrap_or(StatusCode::BAD_GATEWAY);
+                (s, "upstream_error")
+            }
+            ChatError::AllAttemptsFailed { .. } => (StatusCode::BAD_GATEWAY, "all_attempts_failed"),
         };
 
         let mut headers = HeaderMap::new();
         if let Ok(v) = HeaderValue::from_str(code) {
             headers.insert("x-marg-reason", v);
         }
+        let attempts = self.attempts();
+        if !attempts.is_empty() {
+            if let Ok(v) = HeaderValue::from_str(&attempts.len().to_string()) {
+                headers.insert("x-marg-attempts", v);
+            }
+        }
 
         let body = Json(json!({
             "error": {
                 "code": code,
                 "message": self.to_string(),
+                "attempts": attempts,
             }
         }));
 
