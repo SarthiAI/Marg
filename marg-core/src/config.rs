@@ -24,6 +24,8 @@ pub struct Config {
     pub pricing: Vec<PricingEntry>,
     #[serde(default, rename = "routes")]
     pub routes: Vec<RouteSpec>,
+    #[serde(default)]
+    pub admin: AdminConfig,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -207,6 +209,38 @@ impl Default for RateLimitsConfig {
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct AdminConfig {
+    #[serde(default = "default_admin_enabled")]
+    pub enabled: bool,
+    #[serde(default = "default_admin_bind")]
+    pub bind: String,
+    /// Path Marg writes the bootstrap admin token to when no active admin
+    /// tokens are present in storage. Operators read this file once and then
+    /// rotate via the admin API. Empty disables the bootstrap step (operators
+    /// must call `marg admin bootstrap` explicitly).
+    #[serde(default = "default_bootstrap_path")]
+    pub bootstrap_token_path: String,
+    #[serde(default)]
+    pub cors: CorsConfig,
+}
+
+fn default_admin_enabled() -> bool { true }
+fn default_admin_bind() -> String { "127.0.0.1:8081".to_string() }
+fn default_bootstrap_path() -> String { "./marg-admin.token".to_string() }
+
+impl Default for AdminConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_admin_enabled(),
+            bind: default_admin_bind(),
+            bootstrap_token_path: default_bootstrap_path(),
+            cors: CorsConfig::default(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct PricingEntry {
     pub model: String,
     pub input_per_1k_usd: f64,
@@ -233,6 +267,7 @@ impl Default for Config {
             rate_limits: RateLimitsConfig::default(),
             pricing: Vec::new(),
             routes: Vec::new(),
+            admin: AdminConfig::default(),
         }
     }
 }

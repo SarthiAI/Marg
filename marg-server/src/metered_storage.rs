@@ -3,8 +3,12 @@ use chrono::NaiveDate;
 use std::sync::Arc;
 use std::time::Instant;
 
-use marg_core::{BudgetSpec, MargKey, NewKey, RequestLogEntry};
-use marg_storage::{HotStore, HotStoreError, BudgetReservation, Storage, StorageError};
+use marg_core::{
+    AdminToken, BudgetSpec, MargKey, NewAdminToken, NewKey, PersistedRoute, RequestLogEntry,
+};
+use marg_storage::{
+    BudgetReservation, HotStore, HotStoreError, RequestLogQuery, Storage, StorageError,
+};
 
 use crate::metrics::Metrics;
 
@@ -133,6 +137,75 @@ impl Storage for MeteredStorage {
         let started = Instant::now();
         let r = self.inner.recent_request_logs(key_id, limit).await;
         self.record("recent_request_logs", started);
+        r
+    }
+
+    async fn query_request_logs(
+        &self,
+        q: RequestLogQuery,
+    ) -> Result<Vec<RequestLogEntry>, StorageError> {
+        let started = Instant::now();
+        let r = self.inner.query_request_logs(q).await;
+        self.record("query_request_logs", started);
+        r
+    }
+
+    async fn create_admin_token(&self, new: NewAdminToken) -> Result<AdminToken, StorageError> {
+        let started = Instant::now();
+        let r = self.inner.create_admin_token(new).await;
+        self.record("create_admin_token", started);
+        r
+    }
+
+    async fn list_admin_tokens(&self) -> Result<Vec<AdminToken>, StorageError> {
+        let started = Instant::now();
+        let r = self.inner.list_admin_tokens().await;
+        self.record("list_admin_tokens", started);
+        r
+    }
+
+    async fn get_admin_token_by_hash(
+        &self,
+        hash: &str,
+    ) -> Result<Option<AdminToken>, StorageError> {
+        let started = Instant::now();
+        let r = self.inner.get_admin_token_by_hash(hash).await;
+        self.record("get_admin_token_by_hash", started);
+        r
+    }
+
+    async fn revoke_admin_token(&self, id: &str) -> Result<(), StorageError> {
+        let started = Instant::now();
+        let r = self.inner.revoke_admin_token(id).await;
+        self.record("revoke_admin_token", started);
+        r
+    }
+
+    async fn count_active_admin_tokens(&self) -> Result<u64, StorageError> {
+        let started = Instant::now();
+        let r = self.inner.count_active_admin_tokens().await;
+        self.record("count_active_admin_tokens", started);
+        r
+    }
+
+    async fn list_routes(&self) -> Result<Vec<PersistedRoute>, StorageError> {
+        let started = Instant::now();
+        let r = self.inner.list_routes().await;
+        self.record("list_routes", started);
+        r
+    }
+
+    async fn insert_route(&self, route: PersistedRoute) -> Result<(), StorageError> {
+        let started = Instant::now();
+        let r = self.inner.insert_route(route).await;
+        self.record("insert_route", started);
+        r
+    }
+
+    async fn delete_route(&self, id: &str) -> Result<(), StorageError> {
+        let started = Instant::now();
+        let r = self.inner.delete_route(id).await;
+        self.record("delete_route", started);
         r
     }
 }

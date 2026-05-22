@@ -79,6 +79,24 @@ timeout_seconds = 120
 log_prompts = false
 log_responses = false
 
+[admin]
+# Admin HTTP API surface. Mounted on its own port so operators can firewall
+# it separately from the proxy port. Every admin endpoint requires
+# `Authorization: Bearer <admin-token>`.
+enabled = true
+bind = "127.0.0.1:8081"
+# On first boot, Marg mints a bootstrap admin token and writes it here with
+# mode 0600. Idempotent: if any active admin tokens exist already, nothing
+# is minted and nothing is written. Empty string disables the bootstrap
+# step entirely (operators must run `marg admin bootstrap` explicitly).
+bootstrap_token_path = "./marg-admin.token"
+
+[admin.cors]
+# CORS for the admin port. Off by default. Turn on (and list origins) when
+# serving the Marg Console UI from a different origin.
+enabled = false
+allowed_origins = []
+
 [cors]
 # Off by default. Operators serving the console UI from a different origin
 # enable and list the origins explicitly.

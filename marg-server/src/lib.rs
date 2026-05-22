@@ -1,3 +1,4 @@
+pub mod admin;
 mod auth;
 mod chat;
 mod errors;
@@ -5,6 +6,7 @@ mod metered_storage;
 pub mod metrics;
 pub mod observability;
 mod ops;
+pub mod policy;
 mod proxy;
 mod quota;
 mod shutdown;
@@ -19,7 +21,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
-use marg_core::{secret, Config, RoutingEngine};
+use marg_core::{secret, Config};
 use marg_providers::{AnthropicClient, BedrockClient, ChatCompletionsClient, GoogleClient, OpenAIClient};
 use marg_storage::{HotStore, LocalHotStore, RedisHotStore, PostgresStorage, SqliteStorage, Storage};
 use secrecy::SecretString;
@@ -47,13 +49,13 @@ pub async fn run(config_path: &str) -> anyhow::Result<()> {
 
     let providers = build_providers(&cfg)?;
     let registered: Vec<String> = providers.keys().cloned().collect();
-    let routing = RoutingEngine::build(
-        &cfg.routes,
-        cfg.providers.default.clone().or_else(|| registered.first().cloned()),
-        &registered,
-    )
-    .with_context(|| "compiling routing rules")?;
-    let pricing = state::build_pricing(&cfg);
+    let stored_routes = storage
+        .list_routes()
+        .await
+        .context("loading routes from storage")?;
+    let routing = policy::build_initial_routing(&cfg, &stored_routes, &registered)
+        .with_context(|| "compiling routing rules")?;
+    let pricing = policy::build_initial_pricing(&cfg);
 
     let state = AppState::new(
         storage,
@@ -63,7 +65,12 @@ pub async fn run(config_path: &str) -> anyhow::Result<()> {
         pricing,
         cfg.security.clone(),
         metrics,
+        config_path.to_string(),
     );
+
+    admin::serve_admin(cfg.admin.clone(), state.clone())
+        .await
+        .context("starting admin api")?;
 
     let max_body = cfg.server.max_body_bytes;
 
@@ -98,6 +105,7 @@ pub async fn run(config_path: &str) -> anyhow::Result<()> {
         storage = state.storage.backend_name(),
         hot_store = state.hot.backend_name(),
         providers = ?registered,
+        stored_routes = stored_routes.len(),
         "marg listening"
     );
 

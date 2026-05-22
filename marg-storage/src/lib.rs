@@ -2,7 +2,9 @@ use async_trait::async_trait;
 use chrono::NaiveDate;
 use thiserror::Error;
 
-use marg_core::{BudgetSpec, MargKey, NewKey, RequestLogEntry};
+use marg_core::{
+    AdminToken, BudgetSpec, MargKey, NewAdminToken, NewKey, PersistedRoute, RequestLogEntry,
+};
 
 pub mod hot;
 pub mod hot_local;
@@ -56,4 +58,27 @@ pub trait Storage: Send + Sync {
 
     async fn append_request_log(&self, entry: RequestLogEntry) -> Result<(), StorageError>;
     async fn recent_request_logs(&self, key_id: Option<&str>, limit: u32) -> Result<Vec<RequestLogEntry>, StorageError>;
+    async fn query_request_logs(&self, q: RequestLogQuery) -> Result<Vec<RequestLogEntry>, StorageError>;
+
+    // P05 admin surface
+    async fn create_admin_token(&self, new: NewAdminToken) -> Result<AdminToken, StorageError>;
+    async fn list_admin_tokens(&self) -> Result<Vec<AdminToken>, StorageError>;
+    async fn get_admin_token_by_hash(&self, hash: &str) -> Result<Option<AdminToken>, StorageError>;
+    async fn revoke_admin_token(&self, id: &str) -> Result<(), StorageError>;
+    async fn count_active_admin_tokens(&self) -> Result<u64, StorageError>;
+
+    async fn list_routes(&self) -> Result<Vec<PersistedRoute>, StorageError>;
+    async fn insert_route(&self, route: PersistedRoute) -> Result<(), StorageError>;
+    async fn delete_route(&self, id: &str) -> Result<(), StorageError>;
+}
+
+/// Filter set accepted by [`Storage::query_request_logs`]. Mirrors the
+/// `GET /admin/requests?since=...&key_id=...&model=...` admin endpoint.
+#[derive(Debug, Clone, Default)]
+pub struct RequestLogQuery {
+    pub since: Option<chrono::DateTime<chrono::Utc>>,
+    pub key_id: Option<String>,
+    pub model: Option<String>,
+    pub provider: Option<String>,
+    pub limit: u32,
 }

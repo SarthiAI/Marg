@@ -1,3 +1,4 @@
+pub mod admin;
 pub mod budget;
 pub mod config;
 pub mod error;
@@ -8,11 +9,12 @@ pub mod request_log;
 pub mod routing;
 pub mod secret;
 
+pub use admin::{AdminToken, NewAdminToken, NewRouteRequest, PersistedRoute};
 pub use budget::{BudgetCounter, BudgetSpec};
 pub use config::{
-    AnthropicProviderConfig, BedrockProviderConfig, Config, CorsConfig, GoogleProviderConfig,
-    HotStoreConfig, OpenAiProviderConfig, PricingEntry, ProvidersConfig, SecurityConfig,
-    ServerConfig, StorageConfig,
+    AdminConfig, AnthropicProviderConfig, BedrockProviderConfig, Config, CorsConfig,
+    GoogleProviderConfig, HotStoreConfig, OpenAiProviderConfig, PricingEntry, ProvidersConfig,
+    SecurityConfig, ServerConfig, StorageConfig,
 };
 pub use error::ConfigError;
 pub use key::{KeyStatus, MargKey, MargToken, NewKey, TOKEN_PREFIX};

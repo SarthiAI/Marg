@@ -42,8 +42,8 @@ pub async fn chat_completions(
     let req = ChatRequest::parse(&body).map_err(ChatError::Provider)?;
 
     let pick_seed = uuid::Uuid::new_v4().as_u128() as u64;
-    let resolution = state
-        .routing
+    let routing_snapshot = state.routing.load();
+    let resolution = routing_snapshot
         .resolve(&req.model, key.team.as_deref(), pick_seed)
         .map_err(|e| match e {
             marg_core::RoutingError::NoRouteMatched { model } => ChatError::NoRoute { model },

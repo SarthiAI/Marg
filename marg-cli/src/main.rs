@@ -5,7 +5,7 @@ use std::str::FromStr;
 use std::sync::Arc;
 use tracing_subscriber::EnvFilter;
 
-use marg_core::{secret, BudgetSpec, Config, MargToken, NewKey, PrincipalKind};
+use marg_core::{secret, BudgetSpec, Config, MargToken, NewAdminToken, NewKey, PrincipalKind};
 use marg_storage::{PostgresStorage, SqliteStorage, Storage};
 
 /// Which subcommand we are running. The server runs in JSON-log mode by
@@ -49,6 +49,10 @@ enum Command {
     Log {
         #[command(subcommand)]
         action: LogCommand,
+    },
+    Admin {
+        #[command(subcommand)]
+        action: AdminCommand,
     },
 }
 
@@ -109,6 +113,40 @@ enum BudgetCommand {
 }
 
 #[derive(Subcommand)]
+enum AdminCommand {
+    /// Mint the first admin bearer token. Writes it to the configured
+    /// `[admin].bootstrap_token_path` (default `./marg-admin.token`).
+    /// Idempotent: no-op when active admin tokens already exist.
+    Bootstrap {
+        #[arg(long, default_value = "./marg.toml")]
+        config: String,
+        #[arg(long, default_value_t = false)]
+        force: bool,
+        #[arg(long)]
+        label: Option<String>,
+    },
+    /// List admin tokens.
+    Tokens {
+        #[command(subcommand)]
+        action: AdminTokensCommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum AdminTokensCommand {
+    List {
+        #[arg(long, default_value = "./marg.toml")]
+        config: String,
+    },
+    Revoke {
+        #[arg(long)]
+        id: String,
+        #[arg(long, default_value = "./marg.toml")]
+        config: String,
+    },
+}
+
+#[derive(Subcommand)]
 enum LogCommand {
     Tail {
         #[arg(long)]
@@ -162,6 +200,15 @@ async fn main() -> Result<()> {
             LogCommand::Tail { key_id, limit, config } => {
                 log_tail(&config, key_id.as_deref(), limit).await
             }
+        },
+        Command::Admin { action } => match action {
+            AdminCommand::Bootstrap { config, force, label } => {
+                admin_bootstrap(&config, force, label.as_deref()).await
+            }
+            AdminCommand::Tokens { action } => match action {
+                AdminTokensCommand::List { config } => admin_tokens_list(&config).await,
+                AdminTokensCommand::Revoke { id, config } => admin_tokens_revoke(&config, &id).await,
+            },
         },
     }
 }
@@ -386,5 +433,125 @@ async fn log_tail(config_path: &str, key_id: Option<&str>, limit: u32) -> Result
             failovers,
         );
     }
+    Ok(())
+}
+
+async fn admin_bootstrap(config_path: &str, force: bool, label: Option<&str>) -> Result<()> {
+    let cfg = Config::load(config_path)
+        .with_context(|| format!("loading config from {}", config_path))?;
+    let storage = open_storage(config_path).await?;
+    let count = storage
+        .count_active_admin_tokens()
+        .await
+        .context("counting admin tokens")?;
+    if count > 0 && !force {
+        return Err(anyhow!(
+            "active admin tokens already exist ({}). Re-run with --force to mint another.",
+            count
+        ));
+    }
+
+    let token = MargToken::generate();
+    let plain = token.expose().to_string();
+    let new = NewAdminToken {
+        id: uuid::Uuid::new_v4().to_string(),
+        token_hash: token.hash(),
+        token_prefix: token.display_prefix(),
+        label: label.unwrap_or("bootstrap").to_string(),
+        created_at: Utc::now(),
+    };
+    let saved = storage
+        .create_admin_token(new)
+        .await
+        .context("inserting admin token")?;
+
+    let path = cfg.admin.bootstrap_token_path.trim();
+    let written = if path.is_empty() {
+        false
+    } else {
+        match write_token_file(path, &plain) {
+            Ok(()) => true,
+            Err(e) => {
+                eprintln!("warn: failed to write bootstrap token file at {}: {}", path, e);
+                false
+            }
+        }
+    };
+
+    println!("ADMIN TOKEN ID:  {}", saved.id);
+    println!("LABEL:           {}", saved.label);
+    println!("CREATED:         {}", saved.created_at.to_rfc3339());
+    println!();
+    println!("ADMIN BEARER TOKEN (shown once, store it now):");
+    println!("  {}", plain);
+    if written {
+        println!();
+        println!("Also written to {} with mode 0600.", path);
+    }
+    println!();
+    println!("Use with:");
+    println!(
+        "  curl -H 'Authorization: Bearer {}' http://localhost:{}/admin/keys",
+        plain,
+        cfg.admin
+            .bind
+            .rsplit_once(':')
+            .map(|(_, p)| p)
+            .unwrap_or("8081")
+    );
+    Ok(())
+}
+
+async fn admin_tokens_list(config_path: &str) -> Result<()> {
+    let storage = open_storage(config_path).await?;
+    let tokens = storage
+        .list_admin_tokens()
+        .await
+        .context("listing admin tokens")?;
+    if tokens.is_empty() {
+        println!("no admin tokens");
+        return Ok(());
+    }
+    println!(
+        "{:<36}  {:<24}  {:<20}  {:<10}  {}",
+        "id", "prefix", "created_at", "status", "label"
+    );
+    for t in tokens {
+        let status = if t.revoked_at.is_some() { "revoked" } else { "active" };
+        println!(
+            "{:<36}  {:<24}  {:<20}  {:<10}  {}",
+            t.id,
+            t.token_prefix,
+            t.created_at.to_rfc3339(),
+            status,
+            t.label,
+        );
+    }
+    Ok(())
+}
+
+async fn admin_tokens_revoke(config_path: &str, id: &str) -> Result<()> {
+    let storage = open_storage(config_path).await?;
+    storage
+        .revoke_admin_token(id)
+        .await
+        .with_context(|| format!("revoking admin token {}", id))?;
+    println!("revoked admin token {}", id);
+    Ok(())
+}
+
+fn write_token_file(path: &str, contents: &str) -> std::io::Result<()> {
+    use std::io::Write;
+    let mut opts = std::fs::OpenOptions::new();
+    opts.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o600);
+    }
+    let mut file = opts.open(path)?;
+    file.write_all(contents.as_bytes())?;
+    file.write_all(b"\n")?;
+    file.flush()?;
     Ok(())
 }
