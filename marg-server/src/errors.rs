@@ -31,6 +31,9 @@ pub enum ChatError {
     #[error("hot store error: {0}")]
     HotStore(String),
 
+    #[error("storage overloaded: write batcher queue is full")]
+    StorageOverloaded,
+
     #[error("provider error: {0}")]
     Provider(#[from] ProviderError),
 
@@ -104,6 +107,9 @@ impl IntoResponse for ChatError {
                 (StatusCode::SERVICE_UNAVAILABLE, "internal_error")
             }
             ChatError::HotStore(_) => (StatusCode::SERVICE_UNAVAILABLE, "hot_store_unreachable"),
+            ChatError::StorageOverloaded => {
+                (StatusCode::SERVICE_UNAVAILABLE, "storage_overloaded")
+            }
             ChatError::Provider(err) | ChatError::ProviderWithAttempts { source: err, .. } => {
                 if matches!(err, ProviderError::Timeout) {
                     (StatusCode::GATEWAY_TIMEOUT, "upstream_timeout")

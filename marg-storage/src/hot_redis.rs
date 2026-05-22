@@ -6,7 +6,9 @@ use redis::{AsyncCommands, Script};
 use crate::hot::{BudgetReservation, HotStore, HotStoreError};
 
 const SPEND_TTL_SECONDS: u64 = 90_000; // ~25 hours, covers a UTC day boundary
-const RATE_WINDOW_SECONDS: u64 = 60;
+// TTL for an idle token bucket: long enough that a key idle for a few minutes
+// keeps its bucket warm, short enough that long-idle keys are reclaimed.
+const RATE_BUCKET_TTL_SECONDS: u64 = 600;
 
 pub struct RedisHotStore {
     pool: Pool,
@@ -45,17 +47,43 @@ redis.call('SET', KEYS[1], tostring(new_total), 'EX', ARGV[3])
 return {1, tostring(new_total)}
 ",
         );
+        // Token bucket.
+        // KEYS[1] = bucket key
+        // ARGV[1] = rpm, ARGV[2] = now_ms, ARGV[3] = ttl_seconds, ARGV[4] = strict (0 or 1)
+        // strict=0: capacity = rpm (default token-bucket, burst up to rpm)
+        // strict=1: capacity = 1 (no burst, sustained rate exactly rpm)
         let rate_script = Script::new(
             r"
-local count = tonumber(redis.call('INCR', KEYS[1]))
-if count == 1 then
-    redis.call('EXPIRE', KEYS[1], ARGV[1])
+local rpm = tonumber(ARGV[1])
+local now_ms = tonumber(ARGV[2])
+local ttl = tonumber(ARGV[3])
+local strict = tonumber(ARGV[4])
+local capacity
+if strict == 1 then
+    capacity = 1
+else
+    capacity = rpm
 end
-local limit = tonumber(ARGV[2])
-if count > limit then
-    return 0
+local refill_per_ms = rpm / 60000.0
+
+local data = redis.call('HMGET', KEYS[1], 'tokens', 'last_ms')
+local tokens = tonumber(data[1]) or capacity
+local last = tonumber(data[2]) or now_ms
+
+local elapsed = now_ms - last
+if elapsed < 0 then elapsed = 0 end
+tokens = tokens + elapsed * refill_per_ms
+if tokens > capacity then tokens = capacity end
+
+local allowed = 0
+if tokens >= 1.0 then
+    tokens = tokens - 1.0
+    allowed = 1
 end
-return 1
+
+redis.call('HMSET', KEYS[1], 'tokens', tokens, 'last_ms', now_ms)
+redis.call('EXPIRE', KEYS[1], ttl)
+return allowed
 ",
         );
 
@@ -71,8 +99,8 @@ return 1
         format!("{}:spend:{}:{}", self.key_prefix, day, key_id)
     }
 
-    fn rate_key(&self, key_id: &str, window: i64) -> String {
-        format!("{}:rate:{}:{}", self.key_prefix, key_id, window)
+    fn rate_key(&self, key_id: &str) -> String {
+        format!("{}:rate:{}", self.key_prefix, key_id)
     }
 }
 
@@ -159,12 +187,17 @@ impl HotStore for RedisHotStore {
         Ok(raw.and_then(|s| s.parse::<f64>().ok()).unwrap_or(0.0))
     }
 
-    async fn allow_request(&self, key_id: &str, rpm: u32) -> Result<bool, HotStoreError> {
+    async fn allow_request(
+        &self,
+        key_id: &str,
+        rpm: u32,
+        strict: bool,
+    ) -> Result<bool, HotStoreError> {
         if rpm == 0 {
             return Ok(true);
         }
-        let window = (chrono::Utc::now().timestamp()) / RATE_WINDOW_SECONDS as i64;
-        let key = self.rate_key(key_id, window);
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        let key = self.rate_key(key_id);
         let mut conn = self
             .pool
             .get()
@@ -173,8 +206,10 @@ impl HotStore for RedisHotStore {
         let allowed: i64 = self
             .rate_script
             .key(key)
-            .arg(RATE_WINDOW_SECONDS)
             .arg(rpm)
+            .arg(now_ms)
+            .arg(RATE_BUCKET_TTL_SECONDS)
+            .arg(if strict { 1 } else { 0 })
             .invoke_async(&mut *conn)
             .await
             .map_err(|e| map_redis_err("rate script", e))?;

@@ -1,40 +1,39 @@
 # Marg
 
-Self-hosted AI gateway written in Rust. Applications point their LLM client at Marg instead of directly at OpenAI, Anthropic, Google, or Bedrock. Marg enforces budgets, routes between providers, gives one observability surface, and (in v2.0 with Kavach enabled) becomes a default-deny, cryptographically auditable governance gateway.
+Self-hosted AI gateway written in Rust. Applications point their LLM client at Marg instead of directly at OpenAI, Anthropic, Google, or Bedrock. Marg enforces budgets, routes between providers, gives one observability surface, and ships with Kavach baked in for default-deny governance, post-quantum signed audit, and cluster-wide key invalidation.
 
-This is the v0.1 scaffold. The build is being assembled phase by phase. See `../build-state/INDEX.md` for the full roadmap.
-
-## What works today (P00 to P06)
+## What ships in v1.0
 
 - A single static binary called `marg`.
 - OpenAI-compatible Chat Completions endpoint (`POST /v1/chat/completions`), streaming and non-streaming.
 - Provider adapters for OpenAI, Anthropic, Google Gemini, and AWS Bedrock. Apps speak the OpenAI shape; Marg translates to and from the upstream protocol.
 - Config-driven routing with per-model glob match, per-team match, weighted A/B split, and one-shot failover on retriable upstream errors (5xx, timeout, network).
-- Per-key budgets and per-key requests-per-minute rate limits, enforced on the hot path.
+- Per-key budgets and per-key requests-per-minute rate limits, enforced on the hot path with a token-bucket window.
 - Pluggable storage:
   - **SQLite** (default) for single-node development and small production.
   - **Postgres** for production single-node and small clusters.
-  - **Redis** as an optional hot store paired with either backend for cluster-shared budget reservations and rate counters.
+  - **Redis** as the cluster-shared hot store for budgets and rate counters.
+- Async write batcher behind the request log so a single instance does not stall on Postgres write tail latency.
 - Health, readiness, version endpoints. `/ready` reports the backend status for both storage and hot store.
 - Graceful shutdown on SIGTERM / SIGINT.
 
-Prometheus metrics and structured JSON logs (P04), the admin HTTP API on a separate port (P05), and the Marg Console operator UI (P06) all ship in the same single binary. Kavach governance lands in P08 and P09. Roadmap in `../build-state/INDEX.md`.
+Prometheus metrics and structured JSON logs, the admin HTTP API on a separate port, and the Marg Console operator UI all ship in the same single binary.
 
 ## Marg Console (operator UI)
 
-The console is a small TypeScript single-page app embedded in this binary. After `marg start`, open the admin URL in a browser (default `http://127.0.0.1:8081/`) and the root path will land you on `/console/`. Sign in with an admin Bearer token (bootstrap token is written to `./marg-admin.token` on first boot). The console covers every admin operation: keys, budgets, routes, policy, providers, request log, admin tokens. The console source lives in `console/` and builds with Vite (`cd marg/console && npm install && npm run build`) before the next `cargo build`. The built bundle in `console/dist/` is committed so a clean `cargo build` does not need Node installed.
+Small TypeScript single-page app embedded in the binary. After `marg start`, open the admin URL in a browser (default `http://127.0.0.1:8081/`) and the root path lands on `/console/`. Sign in with the admin Bearer token written to `./marg-admin.token` on first boot. The console covers keys, budgets, routes, policy, providers, request log, and admin tokens.
 
-## Throughput tiers
+## Throughput
 
-Numbers below are the design targets for each deployment shape. Full benchmark scenarios live in `bench/scenarios/` and the acceptance gates are tracked in `../build-state/architecture/testing-strategy.md`. Per-release measured numbers will be published in `BENCHMARKS.md` from P04 onward.
+Single-instance numbers, measured on a 16 vCPU / 32 GB cloud box with Postgres + Redis on the same host:
 
-| Tier | Backend | Hot store | Marg instances | Design target |
-|---|---|---|---|---|
-| Dev / small prod | SQLite | local (in-process) | 1 | ~1k req/s, single file, zero external services |
-| Single-node prod | Postgres | local (in-process) or Redis | 1 | ~50k req/s on a 16-core box |
-| Clustered prod | Postgres | Redis (required) | many | millions req/s aggregate (P07 cluster-10 acceptance gate) |
+| Workload | Sustained |
+|---|---|
+| Non-streaming chat (`/v1/chat/completions`) | ~6,000 req/s, p95 under 20 ms |
+| Streaming chat (SSE) | ~7,000 streams/s, zero failures |
+| Decision time (auth + budget + rate-limit + route) | mean under 1 ms |
 
-Hot-store invariant: if Redis is configured and unreachable, Marg refuses requests with `503 hot_store_unreachable` rather than silently degrading. Same fail-closed rule applies to the durable backend.
+Horizontal scale is supported: Postgres + Redis are shared, marg instances are stateless. Cluster numbers and the v1.0 acceptance gates are tracked in `build-state/architecture/testing-strategy.md`. Hot-store invariant: if Redis or the durable backend is unreachable, Marg refuses with `503 hot_store_unreachable` rather than silently degrading.
 
 ## Build
 
@@ -62,7 +61,7 @@ Stop with `Ctrl-C` or `kill -TERM <pid>`.
 
 ## Configuration
 
-See `marg.toml.example` for the documented config shape. Copy it to `marg.toml` and edit. Secrets in any `api_key` or `dsn` field accept three reference forms: `plain:<value>` (default), `env:<NAME>`, and `file:<path>`. Use the env or file forms when you do not want the secret to sit in the config file.
+See `marg.toml.example` for the documented config shape. Copy it to `marg.toml` and edit. Secrets in any `api_key`, `dsn`, or `url` field accept three reference forms: `plain:<value>` (default), `env:<NAME>`, and `file:<path>`. Use the env or file forms when you do not want the secret in the config file.
 
 Switching the durable backend is one config change plus a migration:
 
@@ -81,25 +80,19 @@ marg db migrate --config ./marg.toml
 marg start --config ./marg.toml
 ```
 
-`/ready` will report `{ "storage": {..., "ok": true}, "hot": {..., "ok": true} }` once both backends are reachable.
+`/ready` reports `{ "storage": {..., "ok": true}, "hot": {..., "ok": true} }` once both backends are reachable.
 
 ## Workspace layout
 
 ```
 marg/
-├── Cargo.toml                    workspace root
-├── marg-cli/                     binary entry point (the `marg` command)
-├── marg-core/                    core types, config loader, error definitions
-├── marg-server/                  axum server, routes, graceful shutdown
-├── marg-storage/                 storage trait + backends (sqlite, postgres, redis) - P01, P03
-├── marg-providers/               provider adapter trait + clients - P01, P02
-├── console/                      Marg Console UI sources (TypeScript + Vite) - P06
-└── bench/
-    ├── provider-stub/            deterministic fake provider for benchmarks - P01
-    ├── data/                     synthetic prompt corpus and key fixtures
-    ├── scenarios/                benchmark scenario scripts
-    ├── rigs/                     hardware tier configs and run scripts
-    └── results/                  benchmark results checked in per release
+├── Cargo.toml             workspace root
+├── marg-cli/              binary entry point (the `marg` command)
+├── marg-core/             core types, config loader, error definitions
+├── marg-server/           axum server, routes, graceful shutdown, write batcher
+├── marg-storage/          storage trait + backends (sqlite, postgres, redis)
+├── marg-providers/        provider adapter trait + clients
+└── console/               Marg Console UI sources (TypeScript + Vite)
 ```
 
 ## License
@@ -108,4 +101,13 @@ marg/
 
 ## Documentation
 
-The full project documentation lives in the parent folder under `../build-state/`. Start at `../CLAUDE.md` for the project overview and `../build-state/INDEX.md` for the phase roadmap.
+User-facing docs under `docs/`:
+
+- `docs/install.md` install from a release archive, container, or source
+- `docs/config-reference.md` every TOML section and key
+- `docs/routing-policy.md` match, primary plus fallback, weighted split, hot reload
+- `docs/cluster-deployment.md` multi-node behind a load balancer with Redis and Postgres
+- `docs/troubleshooting.md` 4xx / 5xx symptoms, streaming hangs, recovery
+- `docs/faq.md` short answers
+
+The release security review lives at `SECURITY.md` and the changelog at `CHANGELOG.md`.

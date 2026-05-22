@@ -47,9 +47,18 @@ pub trait HotStore: Send + Sync {
         day: NaiveDate,
     ) -> Result<f64, HotStoreError>;
 
-    /// Returns true if the request fits inside the per-key rpm budget for the
-    /// current 60 second window. An rpm of zero disables the limit.
-    async fn allow_request(&self, key_id: &str, rpm: u32) -> Result<bool, HotStoreError>;
+    /// Returns true if the request fits inside the per-key rpm budget. An
+    /// rpm of zero disables the limit. When `strict` is true the bucket is
+    /// configured as capacity 1 with refill = rpm/60 per second: the sustained
+    /// rate is exactly rpm with zero burst tolerance. When `strict` is false
+    /// (default token-bucket convention) capacity = rpm and refill = rpm per
+    /// 60 000 ms: a fresh bucket starts full and a steady stream sustains rpm.
+    async fn allow_request(
+        &self,
+        key_id: &str,
+        rpm: u32,
+        strict: bool,
+    ) -> Result<bool, HotStoreError>;
 
     /// Invalidate any cached hot state for this key (e.g. after revocation).
     async fn invalidate_key(&self, key_id: &str) -> Result<(), HotStoreError>;

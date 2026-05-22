@@ -29,6 +29,17 @@ path = "./marg.db"
 # # Optional key namespace for sharing one Redis across multiple Marg fleets.
 # key_prefix = "marg"
 
+# Asynchronous write batcher (P08). Spend deltas and request-log rows are
+# enqueued onto a bounded channel and flushed in batches by a background
+# task, so the request path is not blocked on durable-storage writes. On a
+# full queue Marg fails closed: the request returns 503 with x-marg-reason:
+# storage_overloaded. Defaults are sized for ~5,000 req/s sustained on a
+# 16 vCPU box with Postgres + Redis on the same network.
+# [storage.write_batcher]
+# channel_depth = 10000
+# max_batch_size = 256
+# max_batch_age_ms = 50
+
 # Default sample uses OpenAI. For local benchmarking, set base_url to the
 # provider stub: base_url = "http://127.0.0.1:18081".
 #
@@ -114,6 +125,13 @@ allowed_origins = []
 # rate-limit enforcement path lives behind Redis in P03; P01 stores rpm on
 # the key for forward compatibility.
 default_rpm = 0
+# strict_mode = false makes the token-bucket capacity equal rpm: a fresh key
+# can burst up to rpm immediately and then sustains exactly rpm per rolling
+# 60 s (standard token-bucket convention).
+# strict_mode = true forces capacity = 1 and refill = rpm/60 per second: zero
+# burst tolerance, sustained rate exactly rpm. Used by deployments that need
+# every request spaced evenly.
+strict_mode = false
 
 # Pricing table overrides. Marg ships defaults for common OpenAI, Anthropic,
 # Google, and Bedrock models. Override per model here. Costs are USD per

@@ -18,10 +18,14 @@ pub struct PostgresStorage {
 }
 
 impl PostgresStorage {
-    pub async fn connect(dsn: &str) -> Result<Self, StorageError> {
+    pub async fn connect(
+        dsn: &str,
+        max_connections: u32,
+        min_connections: u32,
+    ) -> Result<Self, StorageError> {
         let pool = PgPoolOptions::new()
-            .max_connections(32)
-            .min_connections(2)
+            .max_connections(max_connections)
+            .min_connections(min_connections)
             .acquire_timeout(Duration::from_secs(5))
             .connect(dsn)
             .await
@@ -227,6 +231,52 @@ impl Storage for PostgresStorage {
         Ok(())
     }
 
+    async fn add_spend_batch(
+        &self,
+        items: &[(String, NaiveDate, f64)],
+    ) -> Result<(), StorageError> {
+        if items.is_empty() {
+            return Ok(());
+        }
+        // Fold same (key_id, day) entries together so we only emit one row per
+        // distinct key+day in the multi-row upsert.
+        let mut folded: std::collections::HashMap<(String, NaiveDate), f64> =
+            std::collections::HashMap::with_capacity(items.len());
+        for (k, d, amount) in items {
+            if *amount <= 0.0 {
+                continue;
+            }
+            *folded.entry((k.clone(), *d)).or_insert(0.0) += amount;
+        }
+        if folded.is_empty() {
+            return Ok(());
+        }
+
+        let mut sql = String::from(
+            "INSERT INTO budget_counters (key_id, day, spent_usd) VALUES ",
+        );
+        let mut params: Vec<(String, NaiveDate, f64)> = Vec::with_capacity(folded.len());
+        for (i, ((k, d), amount)) in folded.into_iter().enumerate() {
+            if i > 0 {
+                sql.push_str(", ");
+            }
+            let base = i * 3;
+            sql.push_str(&format!("(${}, ${}, ${})", base + 1, base + 2, base + 3));
+            params.push((k, d, amount));
+        }
+        sql.push_str(
+            " ON CONFLICT (key_id, day) DO UPDATE SET spent_usd = \
+             budget_counters.spent_usd + excluded.spent_usd",
+        );
+
+        let mut q = sqlx::query(&sql);
+        for (k, d, amount) in &params {
+            q = q.bind(k).bind(d).bind(amount);
+        }
+        q.execute(&self.pool).await.map_err(map_sqlx)?;
+        Ok(())
+    }
+
     async fn append_request_log(&self, entry: RequestLogEntry) -> Result<(), StorageError> {
         let attempts_json: Option<serde_json::Value> = if entry.attempts.is_empty() {
             None
@@ -258,6 +308,63 @@ impl Storage for PostgresStorage {
         .execute(&self.pool)
         .await
         .map_err(map_sqlx)?;
+        Ok(())
+    }
+
+    async fn append_request_logs(
+        &self,
+        entries: Vec<RequestLogEntry>,
+    ) -> Result<(), StorageError> {
+        if entries.is_empty() {
+            return Ok(());
+        }
+        let mut sql = String::from(
+            "INSERT INTO request_log (id, timestamp, key_id, principal_id, provider, model, \
+             input_tokens, output_tokens, cost_usd, latency_ms, status, stream, error, attempts) VALUES ",
+        );
+        let mut serialised: Vec<(RequestLogEntry, Option<serde_json::Value>)> =
+            Vec::with_capacity(entries.len());
+        for entry in entries {
+            let attempts_json: Option<serde_json::Value> = if entry.attempts.is_empty() {
+                None
+            } else {
+                Some(
+                    serde_json::to_value(&entry.attempts)
+                        .map_err(|e| StorageError::Backend(format!("serialize attempts: {}", e)))?,
+                )
+            };
+            serialised.push((entry, attempts_json));
+        }
+        for (i, _) in serialised.iter().enumerate() {
+            if i > 0 {
+                sql.push_str(", ");
+            }
+            let b = i * 14;
+            sql.push_str(&format!(
+                "(${}, ${}, ${}, ${}, ${}, ${}, ${}, ${}, ${}, ${}, ${}, ${}, ${}, ${})",
+                b + 1, b + 2, b + 3, b + 4, b + 5, b + 6, b + 7,
+                b + 8, b + 9, b + 10, b + 11, b + 12, b + 13, b + 14
+            ));
+        }
+        let mut q = sqlx::query(&sql);
+        for (entry, attempts_json) in &serialised {
+            q = q
+                .bind(&entry.id)
+                .bind(entry.timestamp)
+                .bind(&entry.key_id)
+                .bind(&entry.principal_id)
+                .bind(&entry.provider)
+                .bind(&entry.model)
+                .bind(entry.input_tokens as i64)
+                .bind(entry.output_tokens as i64)
+                .bind(entry.cost_usd)
+                .bind(entry.latency_ms as i64)
+                .bind(entry.status as i32)
+                .bind(entry.stream)
+                .bind(&entry.error)
+                .bind(attempts_json);
+        }
+        q.execute(&self.pool).await.map_err(map_sqlx)?;
         Ok(())
     }
 

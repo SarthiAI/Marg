@@ -122,10 +122,30 @@ impl Storage for MeteredStorage {
         r
     }
 
+    async fn add_spend_batch(
+        &self,
+        items: &[(String, NaiveDate, f64)],
+    ) -> Result<(), StorageError> {
+        let started = Instant::now();
+        let r = self.inner.add_spend_batch(items).await;
+        self.record("add_spend_batch", started);
+        r
+    }
+
     async fn append_request_log(&self, entry: RequestLogEntry) -> Result<(), StorageError> {
         let started = Instant::now();
         let r = self.inner.append_request_log(entry).await;
         self.record("append_request_log", started);
+        r
+    }
+
+    async fn append_request_logs(
+        &self,
+        entries: Vec<RequestLogEntry>,
+    ) -> Result<(), StorageError> {
+        let started = Instant::now();
+        let r = self.inner.append_request_logs(entries).await;
+        self.record("append_request_logs", started);
         r
     }
 
@@ -277,9 +297,14 @@ impl HotStore for MeteredHotStore {
         r
     }
 
-    async fn allow_request(&self, key_id: &str, rpm: u32) -> Result<bool, HotStoreError> {
+    async fn allow_request(
+        &self,
+        key_id: &str,
+        rpm: u32,
+        strict: bool,
+    ) -> Result<bool, HotStoreError> {
         let started = Instant::now();
-        let r = self.inner.allow_request(key_id, rpm).await;
+        let r = self.inner.allow_request(key_id, rpm, strict).await;
         self.record("allow_request", started);
         r
     }

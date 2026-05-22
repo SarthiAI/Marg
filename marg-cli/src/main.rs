@@ -269,9 +269,13 @@ async fn open_storage(config_path: &str) -> Result<Arc<dyn Storage>> {
                 .as_deref()
                 .context("storage.dsn must be set for postgres backend")?;
             let dsn = secret::resolve(dsn_ref).context("resolving storage.dsn")?;
-            let storage = PostgresStorage::connect(&dsn)
-                .await
-                .with_context(|| "connecting to postgres")?;
+            let storage = PostgresStorage::connect(
+                &dsn,
+                cfg.storage.max_connections,
+                cfg.storage.min_connections,
+            )
+            .await
+            .with_context(|| "connecting to postgres")?;
             storage.migrate().await.context("running postgres migrations")?;
             Ok(Arc::new(storage) as Arc<dyn Storage>)
         }

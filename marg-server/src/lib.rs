@@ -12,6 +12,7 @@ mod quota;
 mod shutdown;
 mod state;
 mod sse;
+mod write_batcher;
 
 use anyhow::Context;
 use axum::Router;
@@ -37,6 +38,8 @@ pub async fn run(config_path: &str) -> anyhow::Result<()> {
     let cfg = Config::load(config_path)
         .with_context(|| format!("loading config from {}", config_path))?;
 
+    check_fd_limit();
+
     let metrics = Metrics::new();
 
     let storage = build_storage(&cfg).await?;
@@ -57,6 +60,12 @@ pub async fn run(config_path: &str) -> anyhow::Result<()> {
         .with_context(|| "compiling routing rules")?;
     let pricing = policy::build_initial_pricing(&cfg);
 
+    let write_batcher = write_batcher::WriteBatcher::spawn(
+        storage.clone(),
+        metrics.clone(),
+        cfg.storage.write_batcher.clone(),
+    );
+
     let state = AppState::new(
         storage,
         hot,
@@ -64,7 +73,9 @@ pub async fn run(config_path: &str) -> anyhow::Result<()> {
         routing,
         pricing,
         cfg.security.clone(),
+        cfg.rate_limits.clone(),
         metrics,
+        write_batcher,
         config_path.to_string(),
     );
 
@@ -135,9 +146,13 @@ async fn build_storage(cfg: &Config) -> anyhow::Result<Arc<dyn Storage>> {
                 .context("storage.dsn must be set for postgres backend")?;
             let dsn = secret::resolve(dsn_ref)
                 .with_context(|| "resolving storage.dsn secret reference")?;
-            let storage = PostgresStorage::connect(&dsn)
-                .await
-                .with_context(|| "connecting to postgres")?;
+            let storage = PostgresStorage::connect(
+                &dsn,
+                cfg.storage.max_connections,
+                cfg.storage.min_connections,
+            )
+            .await
+            .with_context(|| "connecting to postgres")?;
             storage.migrate().await.context("running postgres migrations")?;
             Ok(Arc::new(storage) as Arc<dyn Storage>)
         }
@@ -258,6 +273,51 @@ fn resolve_aws_secret(from_config: Option<&str>, env_var: &str) -> Option<String
         return secret::resolve(v).ok().filter(|s| !s.is_empty());
     }
     std::env::var(env_var).ok().filter(|s| !s.is_empty())
+}
+
+/// Reads the current process RLIMIT_NOFILE soft limit on Linux and logs a
+/// warning if it is below the recommended production floor.
+///
+/// On non-Linux hosts (e.g. macOS during dev) the check is a no-op; the
+/// systemd-managed production path is Linux-only.
+fn check_fd_limit() {
+    const RECOMMENDED_SOFT_LIMIT: u64 = 65_536;
+    let limits = match std::fs::read_to_string("/proc/self/limits") {
+        Ok(text) => text,
+        Err(_) => return,
+    };
+    for line in limits.lines() {
+        if !line.starts_with("Max open files") {
+            continue;
+        }
+        let parts: Vec<&str> = line.split_whitespace().collect();
+        if parts.len() < 5 {
+            return;
+        }
+        let soft: u64 = match parts[3].parse() {
+            Ok(v) => v,
+            Err(_) => return,
+        };
+        let hard: u64 = parts[4].parse().unwrap_or(soft);
+        if soft < RECOMMENDED_SOFT_LIMIT {
+            tracing::warn!(
+                soft_limit = soft,
+                hard_limit = hard,
+                recommended = RECOMMENDED_SOFT_LIMIT,
+                "RLIMIT_NOFILE soft limit is below the recommended production floor; \
+                 saturating throughput may surface as 'accept error: Too many open files'. \
+                 See marg/docs/install.md and marg/docs/cluster-deployment.md for the systemd \
+                 unit and limits.d snippets."
+            );
+        } else {
+            tracing::info!(
+                soft_limit = soft,
+                hard_limit = hard,
+                "RLIMIT_NOFILE check passed"
+            );
+        }
+        return;
+    }
 }
 
 fn build_cors(cfg: &Config) -> CorsLayer {

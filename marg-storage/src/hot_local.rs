@@ -13,8 +13,8 @@ struct Counters {
 
 #[derive(Clone, Copy)]
 struct RateBucket {
-    window_start_unix: i64,
-    count: u32,
+    tokens: f64,
+    last_refill_unix_ms: i64,
 }
 
 pub struct LocalHotStore {
@@ -97,29 +97,39 @@ impl HotStore for LocalHotStore {
         Ok(*g.spend.get(&(key_id.to_string(), day)).unwrap_or(&0.0))
     }
 
-    async fn allow_request(&self, key_id: &str, rpm: u32) -> Result<bool, HotStoreError> {
+    async fn allow_request(
+        &self,
+        key_id: &str,
+        rpm: u32,
+        strict: bool,
+    ) -> Result<bool, HotStoreError> {
         if rpm == 0 {
             return Ok(true);
         }
+        // Token bucket. In default mode capacity = rpm and refill = rpm per
+        // 60 000 ms (burst tolerance up to rpm, sustained rate rpm). In strict
+        // mode capacity = 1 and refill = rpm/60 per second (no burst, sustained
+        // rate exactly rpm).
         let mut g = self
             .state
             .lock()
             .map_err(|e| HotStoreError::Internal(format!("poisoned mutex: {}", e)))?;
-        let now = Utc::now().timestamp();
-        let window = now / 60;
+        let now_ms = Utc::now().timestamp_millis();
+        let capacity: f64 = if strict { 1.0 } else { rpm as f64 };
+        let refill_per_ms = (rpm as f64) / 60_000.0;
         let bucket = g.rate.entry(key_id.to_string()).or_insert(RateBucket {
-            window_start_unix: window,
-            count: 0,
+            tokens: capacity,
+            last_refill_unix_ms: now_ms,
         });
-        if bucket.window_start_unix != window {
-            bucket.window_start_unix = window;
-            bucket.count = 0;
+        let elapsed_ms = (now_ms - bucket.last_refill_unix_ms).max(0) as f64;
+        bucket.tokens = (bucket.tokens + elapsed_ms * refill_per_ms).min(capacity);
+        bucket.last_refill_unix_ms = now_ms;
+        if bucket.tokens >= 1.0 {
+            bucket.tokens -= 1.0;
+            Ok(true)
+        } else {
+            Ok(false)
         }
-        if bucket.count >= rpm {
-            return Ok(false);
-        }
-        bucket.count += 1;
-        Ok(true)
     }
 
     async fn invalidate_key(&self, key_id: &str) -> Result<(), HotStoreError> {

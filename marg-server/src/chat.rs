@@ -19,6 +19,7 @@ use crate::proxy;
 use crate::quota;
 use crate::sse;
 use crate::state::AppState;
+use crate::write_batcher::WriteJob;
 
 const MAX_REQUEST_BYTES: usize = 8 * 1024 * 1024;
 
@@ -27,6 +28,8 @@ pub async fn chat_completions(
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<Response, ChatError> {
+    let decision_started = Instant::now();
+
     if body.len() > MAX_REQUEST_BYTES {
         return Err(ChatError::BadRequest(format!(
             "request body too large: {} bytes",
@@ -54,6 +57,11 @@ pub async fn chat_completions(
 
     let quota_model = resolution.primary.model.clone();
     let reservation = quota::check(&state, &key.id, &budget, &req, &quota_model).await?;
+
+    state
+        .metrics
+        .decision_duration_seconds
+        .observe(decision_started.elapsed().as_secs_f64());
 
     let started = Instant::now();
     if req.stream {
@@ -136,14 +144,30 @@ async fn non_stream_response(
         attempts: attempts.clone(),
     };
 
-    let storage = state.storage.clone();
-    let key_id = key.id.clone();
-    let day = reservation.day;
-    if let Err(e) = storage.add_spend(&key_id, day, actual_cost).await {
-        tracing::warn!(?e, key_id = %key_id, "failed to add spend after non-stream response");
+    // Hand the spend delta and request-log row to the async write batcher.
+    // The batcher folds many such jobs into one round-trip to durable storage,
+    // which keeps the synchronous request path off the database. On a full
+    // queue we fail closed with 503 storage_overloaded; the budget settlement
+    // and metrics have already been applied so the operator sees the load.
+    if actual_cost > 0.0 {
+        if state
+            .write_batcher
+            .enqueue(WriteJob::AddSpend {
+                key_id: key.id.clone(),
+                day: reservation.day,
+                amount_usd: actual_cost,
+            })
+            .is_err()
+        {
+            return Err(ChatError::StorageOverloaded);
+        }
     }
-    if let Err(e) = storage.append_request_log(log).await {
-        tracing::warn!(?e, "failed to append request log after non-stream response");
+    if state
+        .write_batcher
+        .enqueue(WriteJob::RequestLog(log))
+        .is_err()
+    {
+        return Err(ChatError::StorageOverloaded);
     }
 
     let status = StatusCode::from_u16(provider_resp.status).unwrap_or(StatusCode::OK);
@@ -194,10 +218,10 @@ async fn stream_response(
 
     let (tx, rx) = mpsc::unbounded_channel::<Result<Bytes, std::io::Error>>();
 
-    let storage = state.storage.clone();
     let hot = state.hot.clone();
     let pricing = state.pricing.clone();
     let metrics = state.metrics.clone();
+    let write_batcher = state.write_batcher.clone();
     let key_id = key.id.clone();
     let principal_id = key.principal.id.clone();
     let attempts_for_log = attempts.clone();
@@ -215,15 +239,21 @@ async fn stream_response(
         let mut buffer = BytesMut::new();
         let mut usage = ChatUsage::default();
         let mut stream_error: Option<String> = None;
-        let mut client_alive = true;
+        let mut client_disconnected = false;
 
         while let Some(chunk) = byte_stream.next().await {
             match chunk {
                 Ok(bytes) => {
-                    if client_alive {
-                        if tx.send(Ok(bytes.clone())).is_err() {
-                            client_alive = false;
-                        }
+                    if tx.send(Ok(bytes.clone())).is_err() {
+                        // Client closed the body. Cancel the upstream call by
+                        // dropping `byte_stream` and breaking out of the loop;
+                        // reqwest aborts the underlying HTTP request on drop,
+                        // which stops the upstream provider from generating
+                        // further tokens and stops the cost amplification path
+                        // documented in SECURITY.md before P08.
+                        client_disconnected = true;
+                        metrics.record_provider_error(&stream_provider, "client_disconnect");
+                        break;
                     }
                     buffer.extend_from_slice(&bytes);
                     while let Some(event) = sse::take_event(&mut buffer) {
@@ -234,17 +264,16 @@ async fn stream_response(
                 }
                 Err(e) => {
                     let msg = format!("upstream stream error: {}", e);
-                    if client_alive {
-                        let _ = tx.send(Err(std::io::Error::new(
-                            std::io::ErrorKind::Other,
-                            msg.clone(),
-                        )));
-                    }
+                    let _ = tx.send(Err(std::io::Error::new(
+                        std::io::ErrorKind::Other,
+                        msg.clone(),
+                    )));
                     stream_error = Some(msg);
                     break;
                 }
             }
         }
+        drop(byte_stream);
         drop(tx);
 
         let latency = started.elapsed();
@@ -253,29 +282,42 @@ async fn stream_response(
             .load()
             .cost_usd(&stream_model, usage.prompt_tokens, usage.completion_tokens);
 
+        let final_status = if client_disconnected {
+            499 // de-facto code for "client closed request"
+        } else {
+            provider_status
+        };
         metrics.record_request(
             &stream_provider,
             &stream_model,
-            provider_status,
+            final_status,
             latency.as_secs_f64(),
         );
         metrics.record_tokens(&stream_model, usage.prompt_tokens, usage.completion_tokens);
         metrics.stream_finished(&stream_provider);
+
+        let logged_error = stream_error.clone().or_else(|| {
+            if client_disconnected {
+                Some("client disconnected, upstream cancelled".to_string())
+            } else {
+                None
+            }
+        });
 
         let entry = RequestLogEntry {
             id: uuid::Uuid::new_v4().to_string(),
             timestamp: Utc::now(),
             key_id: key_id.clone(),
             principal_id,
-            provider: stream_provider,
-            model: stream_model,
+            provider: stream_provider.clone(),
+            model: stream_model.clone(),
             input_tokens: usage.prompt_tokens,
             output_tokens: usage.completion_tokens,
             cost_usd: cost,
             latency_ms,
-            status: provider_status,
+            status: final_status,
             stream: true,
-            error: stream_error,
+            error: logged_error,
             attempts: attempts_for_log,
         };
 
@@ -285,11 +327,17 @@ async fn stream_response(
                 tracing::warn!(?e, key_id = %key_id, "failed to settle hot budget after stream");
             }
         }
-        if let Err(e) = storage.add_spend(&key_id, reservation_day, cost).await {
-            tracing::warn!(?e, key_id = %key_id, "failed to add spend after stream");
+        if cost > 0.0 {
+            if let Err(_) = write_batcher.enqueue(WriteJob::AddSpend {
+                key_id: key_id.clone(),
+                day: reservation_day,
+                amount_usd: cost,
+            }) {
+                tracing::warn!(key_id = %key_id, "write batcher overflow: dropped streaming spend");
+            }
         }
-        if let Err(e) = storage.append_request_log(entry).await {
-            tracing::warn!(?e, "failed to append request log after stream");
+        if let Err(_) = write_batcher.enqueue(WriteJob::RequestLog(entry)) {
+            tracing::warn!(key_id = %key_id, "write batcher overflow: dropped streaming request log");
         }
 
         if budget_for_gauge.daily_usd > 0.0 {

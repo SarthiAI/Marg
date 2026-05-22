@@ -6,7 +6,6 @@ members = [
     "marg-server",
     "marg-storage",
     "marg-providers",
-    "bench/provider-stub",
 ]
 
 [workspace.package]

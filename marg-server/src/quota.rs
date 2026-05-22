@@ -26,7 +26,7 @@ pub async fn check(
     if !budget.is_unlimited_rpm() {
         let allowed = state
             .hot
-            .allow_request(key_id, budget.rpm)
+            .allow_request(key_id, budget.rpm, state.rate_limits.strict_mode)
             .await
             .map_err(|e| ChatError::HotStore(format!("rate limit check failed: {}", e)))?;
         if !allowed {

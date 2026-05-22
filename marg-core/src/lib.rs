@@ -14,7 +14,7 @@ pub use budget::{BudgetCounter, BudgetSpec};
 pub use config::{
     AdminConfig, AnthropicProviderConfig, BedrockProviderConfig, Config, CorsConfig,
     GoogleProviderConfig, HotStoreConfig, OpenAiProviderConfig, PricingEntry, ProvidersConfig,
-    SecurityConfig, ServerConfig, StorageConfig,
+    RateLimitsConfig, SecurityConfig, ServerConfig, StorageConfig, WriteBatcherConfig,
 };
 pub use error::ConfigError;
 pub use key::{KeyStatus, MargKey, MargToken, NewKey, TOKEN_PREFIX};

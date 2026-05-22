@@ -1,5 +1,6 @@
 use prometheus::{
-    Encoder, HistogramOpts, HistogramVec, IntCounterVec, IntGaugeVec, Opts, Registry, TextEncoder,
+    Encoder, HistogramOpts, HistogramVec, IntCounter, IntCounterVec, IntGauge, IntGaugeVec, Opts,
+    Registry, TextEncoder,
 };
 use std::sync::Arc;
 
@@ -11,6 +12,7 @@ pub struct Metrics {
     pub registry: Registry,
     pub requests_total: IntCounterVec,
     pub request_duration_seconds: HistogramVec,
+    pub decision_duration_seconds: prometheus::Histogram,
     pub tokens_total: IntCounterVec,
     pub budget_remaining_usd: prometheus::GaugeVec,
     pub provider_errors_total: IntCounterVec,
@@ -18,6 +20,10 @@ pub struct Metrics {
     pub storage_query_duration_seconds: HistogramVec,
     pub hot_store_query_duration_seconds: HistogramVec,
     pub active_streams: IntGaugeVec,
+    pub write_batcher_queue_depth: IntGauge,
+    pub write_batcher_flushes_total: IntCounterVec,
+    pub write_batcher_rows_total: IntCounterVec,
+    pub write_batcher_overflow_total: IntCounter,
 }
 
 impl Metrics {
@@ -45,6 +51,18 @@ impl Metrics {
             &["provider", "model"],
         )
         .expect("valid metric definition: marg_request_duration_seconds");
+
+        let decision_duration_seconds = prometheus::Histogram::with_opts(
+            HistogramOpts::new(
+                "marg_decision_duration_seconds",
+                "Marg-internal decision duration in seconds: auth + budget reserve + rate-limit check + route selection, BEFORE the upstream call. Measured per accepted request.",
+            )
+            .buckets(vec![
+                0.00001, 0.00002, 0.00005, 0.0001, 0.00025, 0.0005, 0.001, 0.0025, 0.005, 0.01,
+                0.025, 0.05, 0.1,
+            ]),
+        )
+        .expect("valid metric definition: marg_decision_duration_seconds");
 
         let tokens_total = IntCounterVec::new(
             Opts::new(
@@ -117,12 +135,45 @@ impl Metrics {
         )
         .expect("valid metric definition: marg_active_streams");
 
+        let write_batcher_queue_depth = IntGauge::with_opts(Opts::new(
+            "marg_write_batcher_queue_depth",
+            "Pending work items in the asynchronous storage-write batcher queue.",
+        ))
+        .expect("valid metric definition: marg_write_batcher_queue_depth");
+
+        let write_batcher_flushes_total = IntCounterVec::new(
+            Opts::new(
+                "marg_write_batcher_flushes_total",
+                "Batches flushed by the asynchronous write batcher, labelled by outcome (ok or err) and kind (spend or request_log).",
+            ),
+            &["outcome", "kind"],
+        )
+        .expect("valid metric definition: marg_write_batcher_flushes_total");
+
+        let write_batcher_rows_total = IntCounterVec::new(
+            Opts::new(
+                "marg_write_batcher_rows_total",
+                "Rows flushed by the asynchronous write batcher, labelled by kind (spend or request_log).",
+            ),
+            &["kind"],
+        )
+        .expect("valid metric definition: marg_write_batcher_rows_total");
+
+        let write_batcher_overflow_total = IntCounter::with_opts(Opts::new(
+            "marg_write_batcher_overflow_total",
+            "Total requests refused with 503 storage_overloaded because the write batcher queue was full.",
+        ))
+        .expect("valid metric definition: marg_write_batcher_overflow_total");
+
         registry
             .register(Box::new(requests_total.clone()))
             .expect("register requests_total");
         registry
             .register(Box::new(request_duration_seconds.clone()))
             .expect("register request_duration_seconds");
+        registry
+            .register(Box::new(decision_duration_seconds.clone()))
+            .expect("register decision_duration_seconds");
         registry
             .register(Box::new(tokens_total.clone()))
             .expect("register tokens_total");
@@ -144,6 +195,18 @@ impl Metrics {
         registry
             .register(Box::new(active_streams.clone()))
             .expect("register active_streams");
+        registry
+            .register(Box::new(write_batcher_queue_depth.clone()))
+            .expect("register write_batcher_queue_depth");
+        registry
+            .register(Box::new(write_batcher_flushes_total.clone()))
+            .expect("register write_batcher_flushes_total");
+        registry
+            .register(Box::new(write_batcher_rows_total.clone()))
+            .expect("register write_batcher_rows_total");
+        registry
+            .register(Box::new(write_batcher_overflow_total.clone()))
+            .expect("register write_batcher_overflow_total");
 
         #[cfg(target_os = "linux")]
         {
@@ -156,6 +219,7 @@ impl Metrics {
             registry,
             requests_total,
             request_duration_seconds,
+            decision_duration_seconds,
             tokens_total,
             budget_remaining_usd,
             provider_errors_total,
@@ -163,6 +227,10 @@ impl Metrics {
             storage_query_duration_seconds,
             hot_store_query_duration_seconds,
             active_streams,
+            write_batcher_queue_depth,
+            write_batcher_flushes_total,
+            write_batcher_rows_total,
+            write_batcher_overflow_total,
         })
     }
 

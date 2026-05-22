@@ -55,12 +55,20 @@ pub struct StorageConfig {
     pub path: String,
     #[serde(default)]
     pub dsn: Option<String>,
+    #[serde(default = "default_storage_max_connections")]
+    pub max_connections: u32,
+    #[serde(default = "default_storage_min_connections")]
+    pub min_connections: u32,
     #[serde(default)]
     pub hot: Option<HotStoreConfig>,
+    #[serde(default)]
+    pub write_batcher: WriteBatcherConfig,
 }
 
 fn default_storage_backend() -> String { "sqlite".to_string() }
 fn default_sqlite_path() -> String { "./marg.db".to_string() }
+fn default_storage_max_connections() -> u32 { 200 }
+fn default_storage_min_connections() -> u32 { 8 }
 
 impl Default for StorageConfig {
     fn default() -> Self {
@@ -68,7 +76,35 @@ impl Default for StorageConfig {
             backend: default_storage_backend(),
             path: default_sqlite_path(),
             dsn: None,
+            max_connections: default_storage_max_connections(),
+            min_connections: default_storage_min_connections(),
             hot: None,
+            write_batcher: WriteBatcherConfig::default(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WriteBatcherConfig {
+    #[serde(default = "default_write_batcher_channel_depth")]
+    pub channel_depth: usize,
+    #[serde(default = "default_write_batcher_max_batch_size")]
+    pub max_batch_size: usize,
+    #[serde(default = "default_write_batcher_max_batch_age_ms")]
+    pub max_batch_age_ms: u64,
+}
+
+fn default_write_batcher_channel_depth() -> usize { 10_000 }
+fn default_write_batcher_max_batch_size() -> usize { 256 }
+fn default_write_batcher_max_batch_age_ms() -> u64 { 50 }
+
+impl Default for WriteBatcherConfig {
+    fn default() -> Self {
+        Self {
+            channel_depth: default_write_batcher_channel_depth(),
+            max_batch_size: default_write_batcher_max_batch_size(),
+            max_batch_age_ms: default_write_batcher_max_batch_age_ms(),
         }
     }
 }
@@ -199,11 +235,16 @@ impl Default for CorsConfig {
 pub struct RateLimitsConfig {
     #[serde(default)]
     pub default_rpm: u32,
+    /// When true, the token-bucket capacity is fixed at 1 token regardless of
+    /// rpm: the sustained rate is exactly rpm with zero burst tolerance.
+    /// Default off (standard token-bucket: burst up to rpm, sustained rpm).
+    #[serde(default)]
+    pub strict_mode: bool,
 }
 
 impl Default for RateLimitsConfig {
     fn default() -> Self {
-        Self { default_rpm: 0 }
+        Self { default_rpm: 0, strict_mode: false }
     }
 }
 

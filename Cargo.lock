@@ -1281,26 +1281,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "marg-provider-stub"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "async-stream",
- "axum",
- "bytes",
- "chrono",
- "clap",
- "futures",
- "serde",
- "serde_json",
- "tokio",
- "tokio-stream",
- "tracing",
- "tracing-subscriber",
- "uuid",
-]
-
-[[package]]
 name = "marg-providers"
 version = "0.1.0"
 dependencies = [

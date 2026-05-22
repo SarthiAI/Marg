@@ -5,12 +5,14 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use marg_core::{
-    AdminToken, BudgetSpec, Config, MargKey, PricingTable, RoutingEngine, SecurityConfig,
+    AdminToken, BudgetSpec, Config, MargKey, PricingTable, RateLimitsConfig, RoutingEngine,
+    SecurityConfig,
 };
 use marg_providers::ChatCompletionsClient;
 use marg_storage::{HotStore, Storage};
 
 use crate::metrics::Metrics;
+use crate::write_batcher::WriteBatcher;
 
 pub type ProviderRegistry = HashMap<String, Arc<dyn ChatCompletionsClient>>;
 
@@ -22,9 +24,11 @@ pub struct AppState {
     pub routing: Arc<ArcSwap<RoutingEngine>>,
     pub pricing: Arc<ArcSwap<PricingTable>>,
     pub security: SecurityConfig,
+    pub rate_limits: RateLimitsConfig,
     pub key_cache: Cache<String, CachedKey>,
     pub admin_cache: Cache<String, CachedAdmin>,
     pub metrics: Arc<Metrics>,
+    pub write_batcher: Arc<WriteBatcher>,
     pub config_path: Arc<String>,
 }
 
@@ -48,7 +52,9 @@ impl AppState {
         routing: RoutingEngine,
         pricing: PricingTable,
         security: SecurityConfig,
+        rate_limits: RateLimitsConfig,
         metrics: Arc<Metrics>,
+        write_batcher: Arc<WriteBatcher>,
         config_path: String,
     ) -> Self {
         let key_cache = Cache::builder()
@@ -66,9 +72,11 @@ impl AppState {
             routing: Arc::new(ArcSwap::from_pointee(routing)),
             pricing: Arc::new(ArcSwap::from_pointee(pricing)),
             security,
+            rate_limits,
             key_cache,
             admin_cache,
             metrics,
+            write_batcher,
             config_path: Arc::new(config_path),
         }
     }

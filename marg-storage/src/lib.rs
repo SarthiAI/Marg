@@ -56,7 +56,34 @@ pub trait Storage: Send + Sync {
     async fn current_spend(&self, key_id: &str, day: NaiveDate) -> Result<f64, StorageError>;
     async fn add_spend(&self, key_id: &str, day: NaiveDate, amount_usd: f64) -> Result<(), StorageError>;
 
+    /// Apply many spend deltas in one round-trip. Backends should fold same
+    /// `(key_id, day)` entries together and execute a single multi-row upsert.
+    /// Default impl loops so older backends keep working; production backends
+    /// override for throughput.
+    async fn add_spend_batch(
+        &self,
+        items: &[(String, NaiveDate, f64)],
+    ) -> Result<(), StorageError> {
+        for (key_id, day, amount) in items {
+            self.add_spend(key_id, *day, *amount).await?;
+        }
+        Ok(())
+    }
+
     async fn append_request_log(&self, entry: RequestLogEntry) -> Result<(), StorageError>;
+
+    /// Append many request log rows in one round-trip. Default impl loops.
+    /// Production backends override with a multi-row INSERT.
+    async fn append_request_logs(
+        &self,
+        entries: Vec<RequestLogEntry>,
+    ) -> Result<(), StorageError> {
+        for e in entries {
+            self.append_request_log(e).await?;
+        }
+        Ok(())
+    }
+
     async fn recent_request_logs(&self, key_id: Option<&str>, limit: u32) -> Result<Vec<RequestLogEntry>, StorageError>;
     async fn query_request_logs(&self, q: RequestLogQuery) -> Result<Vec<RequestLogEntry>, StorageError>;
 

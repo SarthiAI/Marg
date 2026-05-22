@@ -1,0 +1,54 @@
+[Unit]
+Description=Marg AI gateway
+Documentation=https://github.com/SarthiAI/marg
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=marg
+Group=marg
+WorkingDirectory=/var/lib/marg
+ExecStart=/usr/local/bin/marg start --config /etc/marg/marg.toml
+
+# Production file-descriptor floor. Required to sustain >= 5,000 req/s
+# without "accept error: Too many open files".
+LimitNOFILE=1048576
+
+# Other resource limits. Sized for a 16-core node with 32 GB RAM; raise
+# proportionally on larger nodes.
+LimitNPROC=65536
+
+# Restart policy. Marg is stateless; restart-on-crash is safe and
+# returns the node to rotation as soon as the health probe passes.
+Restart=on-failure
+RestartSec=5
+
+# Graceful shutdown. Marg drains in-flight requests on SIGTERM up to 30 s.
+KillSignal=SIGTERM
+TimeoutStopSec=45
+
+# Logging. JSON access log goes to stdout/stderr; journald captures both.
+Environment=MARG_LOG_FORMAT=json
+Environment=RUST_LOG=info
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=marg
+
+# Lock down the unit. None of these block the documented Marg surface.
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+NoNewPrivileges=true
+ReadWritePaths=/var/lib/marg
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=true
+RestrictRealtime=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+
+[Install]
+WantedBy=multi-user.target

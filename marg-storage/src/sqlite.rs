@@ -256,6 +256,42 @@ impl Storage for SqliteStorage {
         Ok(())
     }
 
+    async fn add_spend_batch(
+        &self,
+        items: &[(String, NaiveDate, f64)],
+    ) -> Result<(), StorageError> {
+        if items.is_empty() {
+            return Ok(());
+        }
+        let mut folded: std::collections::HashMap<(String, NaiveDate), f64> =
+            std::collections::HashMap::with_capacity(items.len());
+        for (k, d, amount) in items {
+            if *amount <= 0.0 {
+                continue;
+            }
+            *folded.entry((k.clone(), *d)).or_insert(0.0) += amount;
+        }
+        if folded.is_empty() {
+            return Ok(());
+        }
+        let mut tx = self.pool.begin().await.map_err(map_sqlx)?;
+        for ((k, d), amount) in folded {
+            let day_str = d.to_string();
+            sqlx::query(
+                "INSERT INTO budget_counters (key_id, day, spent_usd) VALUES (?, ?, ?) \
+                 ON CONFLICT(key_id, day) DO UPDATE SET spent_usd = spent_usd + excluded.spent_usd",
+            )
+            .bind(&k)
+            .bind(&day_str)
+            .bind(amount)
+            .execute(&mut *tx)
+            .await
+            .map_err(map_sqlx)?;
+        }
+        tx.commit().await.map_err(map_sqlx)?;
+        Ok(())
+    }
+
     async fn append_request_log(&self, entry: RequestLogEntry) -> Result<(), StorageError> {
         let attempts_json: Option<String> = if entry.attempts.is_empty() {
             None
@@ -287,6 +323,50 @@ impl Storage for SqliteStorage {
         .execute(&self.pool)
         .await
         .map_err(map_sqlx)?;
+        Ok(())
+    }
+
+    async fn append_request_logs(
+        &self,
+        entries: Vec<RequestLogEntry>,
+    ) -> Result<(), StorageError> {
+        if entries.is_empty() {
+            return Ok(());
+        }
+        let mut tx = self.pool.begin().await.map_err(map_sqlx)?;
+        for entry in entries {
+            let attempts_json: Option<String> = if entry.attempts.is_empty() {
+                None
+            } else {
+                Some(
+                    serde_json::to_string(&entry.attempts)
+                        .map_err(|e| StorageError::Backend(format!("serialize attempts: {}", e)))?,
+                )
+            };
+            sqlx::query(
+                "INSERT INTO request_log (id, timestamp, key_id, principal_id, provider, model, \
+                 input_tokens, output_tokens, cost_usd, latency_ms, status, stream, error, attempts) \
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            )
+            .bind(&entry.id)
+            .bind(entry.timestamp.to_rfc3339())
+            .bind(&entry.key_id)
+            .bind(&entry.principal_id)
+            .bind(&entry.provider)
+            .bind(&entry.model)
+            .bind(entry.input_tokens as i64)
+            .bind(entry.output_tokens as i64)
+            .bind(entry.cost_usd)
+            .bind(entry.latency_ms as i64)
+            .bind(entry.status as i64)
+            .bind(if entry.stream { 1i64 } else { 0i64 })
+            .bind(&entry.error)
+            .bind(&attempts_json)
+            .execute(&mut *tx)
+            .await
+            .map_err(map_sqlx)?;
+        }
+        tx.commit().await.map_err(map_sqlx)?;
         Ok(())
     }
 
