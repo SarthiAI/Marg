@@ -3,6 +3,7 @@ use axum::routing::{delete, get, post};
 use axum::Router;
 
 use crate::admin::auth::require_admin_token;
+use crate::admin::console;
 use crate::admin::handlers;
 use crate::state::AppState;
 
@@ -31,6 +32,11 @@ pub fn build_router(state: AppState) -> Router {
 
     let public = Router::new()
         .route("/admin/openapi.json", get(handlers::openapi::spec))
+        .route("/metrics", get(crate::observability::metrics_handler))
+        .route("/", get(console::root_redirect))
+        .route("/console", get(console::console_redirect))
+        .route("/console/", get(console::index))
+        .route("/console/*rest", get(console::asset))
         .with_state(state);
 
     public.merge(protected)

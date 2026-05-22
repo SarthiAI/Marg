@@ -4,7 +4,7 @@ Self-hosted AI gateway written in Rust. Applications point their LLM client at M
 
 This is the v0.1 scaffold. The build is being assembled phase by phase. See `../build-state/INDEX.md` for the full roadmap.
 
-## What works today (P00 to P03)
+## What works today (P00 to P06)
 
 - A single static binary called `marg`.
 - OpenAI-compatible Chat Completions endpoint (`POST /v1/chat/completions`), streaming and non-streaming.
@@ -18,7 +18,11 @@ This is the v0.1 scaffold. The build is being assembled phase by phase. See `../
 - Health, readiness, version endpoints. `/ready` reports the backend status for both storage and hot store.
 - Graceful shutdown on SIGTERM / SIGINT.
 
-Observability (Prometheus metrics, structured JSON logs), the admin HTTP API, and the console UI land in P04 through P06. Kavach governance lands in P08 and P09. Roadmap in `../build-state/INDEX.md`.
+Prometheus metrics and structured JSON logs (P04), the admin HTTP API on a separate port (P05), and the Marg Console operator UI (P06) all ship in the same single binary. Kavach governance lands in P08 and P09. Roadmap in `../build-state/INDEX.md`.
+
+## Marg Console (operator UI)
+
+The console is a small TypeScript single-page app embedded in this binary. After `marg start`, open the admin URL in a browser (default `http://127.0.0.1:8081/`) and the root path will land you on `/console/`. Sign in with an admin Bearer token (bootstrap token is written to `./marg-admin.token` on first boot). The console covers every admin operation: keys, budgets, routes, policy, providers, request log, admin tokens. The console source lives in `console/` and builds with Vite (`cd marg/console && npm install && npm run build`) before the next `cargo build`. The built bundle in `console/dist/` is committed so a clean `cargo build` does not need Node installed.
 
 ## Throughput tiers
 
@@ -89,6 +93,7 @@ marg/
 ├── marg-server/                  axum server, routes, graceful shutdown
 ├── marg-storage/                 storage trait + backends (sqlite, postgres, redis) - P01, P03
 ├── marg-providers/               provider adapter trait + clients - P01, P02
+├── console/                      Marg Console UI sources (TypeScript + Vite) - P06
 └── bench/
     ├── provider-stub/            deterministic fake provider for benchmarks - P01
     ├── data/                     synthetic prompt corpus and key fixtures

@@ -7,6 +7,7 @@
 //! `DELETE /admin/auth/tokens/{id}`.
 
 pub mod auth;
+pub mod console;
 pub mod error;
 pub mod handlers;
 pub mod openapi;

@@ -93,9 +93,15 @@ bootstrap_token_path = "./marg-admin.token"
 
 [admin.cors]
 # CORS for the admin port. Off by default. Turn on (and list origins) when
-# serving the Marg Console UI from a different origin.
+# serving the Marg Console UI from a different origin (for example, the
+# Vite dev server at http://localhost:5173). When the console is served
+# same-origin from this binary (the default), CORS is not needed.
 enabled = false
 allowed_origins = []
+
+# The Marg Console UI ships embedded in this binary. Visit the admin port
+# in a browser to land on it (root and /console both redirect to
+# /console/). Auth is the same admin Bearer token as the JSON API.
 
 [cors]
 # Off by default. Operators serving the console UI from a different origin
