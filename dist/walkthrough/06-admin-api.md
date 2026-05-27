@@ -35,8 +35,8 @@ ADMIN POST /admin/policy/reload 200 jq '.reloaded == true'
 # Providers health
 ADMIN GET /admin/providers/health 200 jq '.providers | type == "array"'
 
-# Requests list
-ADMIN GET /admin/requests?limit=10 200 jq '.requests | type == "array"'
+# Requests list (cursor pagination - response shape: {entries:[...], next_cursor:"..."})
+ADMIN GET /admin/requests?limit=10 200 jq '.entries | type == "array"' jq '.next_cursor | type == "string" or . == null'
 
 # Audit list / export / verify / status
 ADMIN GET /admin/audit/entries?since=0&limit=5 200 jq '.entries | type == "array"'
