@@ -35,6 +35,11 @@ moka = { workspace = true }
 arc-swap = { workspace = true }
 secrecy = { workspace = true }
 prometheus = { workspace = true }
+data-encoding = { workspace = true }
+toml = { workspace = true }
+sha2 = { workspace = true }
+kavach-core = { workspace = true }
+kavach-pq = { workspace = true }
 
 [lints]
 workspace = true

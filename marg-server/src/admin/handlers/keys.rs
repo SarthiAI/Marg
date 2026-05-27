@@ -7,6 +7,7 @@ use std::str::FromStr;
 use marg_core::{BudgetSpec, MargKey, MargToken, NewKey, PrincipalKind};
 
 use crate::admin::error::AdminError;
+use crate::kavach::{emit_key_event, KeyEventKind};
 use crate::state::AppState;
 
 #[derive(Debug, Deserialize)]
@@ -58,6 +59,14 @@ pub async fn create(
         rpm: req.rpm,
     };
     state.storage.upsert_budget(budget.clone()).await?;
+
+    emit_key_event(
+        &state.kavach.audit_chain,
+        "admin",
+        &saved.id,
+        KeyEventKind::Created,
+        Some(&format!("principal={} kind={}", req.principal_id, req.kind)),
+    );
 
     Ok(Json(CreateKeyResponse {
         key: saved,
@@ -117,6 +126,13 @@ pub async fn revoke(
     }
     state.metrics.clear_budget_remaining(&id);
     state.key_cache.invalidate_all();
+    emit_key_event(
+        &state.kavach.audit_chain,
+        "admin",
+        &id,
+        KeyEventKind::Revoked,
+        Some("admin revoke"),
+    );
     Ok(Json(json!({ "id": id, "revoked": true })))
 }
 
@@ -130,5 +146,15 @@ pub async fn invalidate(
         .await
         .map_err(|e| AdminError::Storage(e.to_string()))?;
     state.key_cache.invalidate_all();
+    // P09 ships single-node invalidation only; cluster broadcast lands in P10
+    // when kavach-redis joins the workspace and the broadcaster swaps from
+    // Noop to RedisInvalidationBroadcaster.
+    emit_key_event(
+        &state.kavach.audit_chain,
+        "admin",
+        &id,
+        KeyEventKind::Invalidated,
+        Some("admin invalidate"),
+    );
     Ok(Json(json!({ "id": id, "invalidated": true })))
 }

@@ -2,6 +2,7 @@ use serde::Deserialize;
 use std::path::Path;
 
 use crate::error::ConfigError;
+use crate::kavach::{InvariantToml, KavachConfig};
 use crate::pricing::ModelPrice;
 use crate::routing::RouteSpec;
 
@@ -26,6 +27,16 @@ pub struct Config {
     pub routes: Vec<RouteSpec>,
     #[serde(default)]
     pub admin: AdminConfig,
+    #[serde(default)]
+    pub kavach: KavachConfig,
+    /// Inline `[[policy]]` blocks at the top of `marg.toml`. Only honored when
+    /// `[kavach].policy_path` is unset (dev fallback per ADR-014). Held as
+    /// opaque `toml::Value` so Kavach's policy schema can evolve independently.
+    #[serde(default, rename = "policy", alias = "policies")]
+    pub inline_policies: Vec<toml::Value>,
+    /// Inline `[[invariant]]` blocks at the top of `marg.toml` (dev fallback).
+    #[serde(default, rename = "invariant", alias = "invariants")]
+    pub inline_invariants: Vec<InvariantToml>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -189,6 +200,13 @@ pub struct BedrockProviderConfig {
     pub secret_access_key: Option<String>,
     #[serde(default)]
     pub session_token: Option<String>,
+    /// Override the upstream Bedrock URL. Default is the real AWS
+    /// `https://bedrock-runtime.<region>.amazonaws.com`. Set this to point
+    /// at a local fake (the marg-provider-stub Bedrock mode) for tests,
+    /// to a VPC endpoint URL for PrivateLink deployments, or to an
+    /// internal proxy.
+    #[serde(default)]
+    pub base_url: Option<String>,
     #[serde(default = "default_bedrock_default_max_tokens")]
     pub default_max_tokens: u32,
     #[serde(default = "default_bedrock_anthropic_version")]
@@ -309,6 +327,9 @@ impl Default for Config {
             pricing: Vec::new(),
             routes: Vec::new(),
             admin: AdminConfig::default(),
+            kavach: crate::kavach::KavachConfig::default(),
+            inline_policies: Vec::new(),
+            inline_invariants: Vec::new(),
         }
     }
 }

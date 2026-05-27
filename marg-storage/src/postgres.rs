@@ -288,8 +288,8 @@ impl Storage for PostgresStorage {
         };
         sqlx::query(
             "INSERT INTO request_log (id, timestamp, key_id, principal_id, provider, model, \
-             input_tokens, output_tokens, cost_usd, latency_ms, status, stream, error, attempts) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)",
+             input_tokens, output_tokens, cost_usd, latency_ms, status, stream, error, team, attempts) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)",
         )
         .bind(&entry.id)
         .bind(entry.timestamp)
@@ -304,6 +304,7 @@ impl Storage for PostgresStorage {
         .bind(entry.status as i32)
         .bind(entry.stream)
         .bind(&entry.error)
+        .bind(&entry.team)
         .bind(&attempts_json)
         .execute(&self.pool)
         .await
@@ -320,7 +321,7 @@ impl Storage for PostgresStorage {
         }
         let mut sql = String::from(
             "INSERT INTO request_log (id, timestamp, key_id, principal_id, provider, model, \
-             input_tokens, output_tokens, cost_usd, latency_ms, status, stream, error, attempts) VALUES ",
+             input_tokens, output_tokens, cost_usd, latency_ms, status, stream, error, team, attempts) VALUES ",
         );
         let mut serialised: Vec<(RequestLogEntry, Option<serde_json::Value>)> =
             Vec::with_capacity(entries.len());
@@ -339,11 +340,11 @@ impl Storage for PostgresStorage {
             if i > 0 {
                 sql.push_str(", ");
             }
-            let b = i * 14;
+            let b = i * 15;
             sql.push_str(&format!(
-                "(${}, ${}, ${}, ${}, ${}, ${}, ${}, ${}, ${}, ${}, ${}, ${}, ${}, ${})",
+                "(${}, ${}, ${}, ${}, ${}, ${}, ${}, ${}, ${}, ${}, ${}, ${}, ${}, ${}, ${})",
                 b + 1, b + 2, b + 3, b + 4, b + 5, b + 6, b + 7,
-                b + 8, b + 9, b + 10, b + 11, b + 12, b + 13, b + 14
+                b + 8, b + 9, b + 10, b + 11, b + 12, b + 13, b + 14, b + 15
             ));
         }
         let mut q = sqlx::query(&sql);
@@ -362,6 +363,7 @@ impl Storage for PostgresStorage {
                 .bind(entry.status as i32)
                 .bind(entry.stream)
                 .bind(&entry.error)
+                .bind(&entry.team)
                 .bind(attempts_json);
         }
         q.execute(&self.pool).await.map_err(map_sqlx)?;
@@ -411,6 +413,10 @@ impl Storage for PostgresStorage {
             sql.push_str(&format!(" AND key_id = ${}", idx));
             idx += 1;
         }
+        if q.team.is_some() {
+            sql.push_str(&format!(" AND team = ${}", idx));
+            idx += 1;
+        }
         if q.model.is_some() {
             sql.push_str(&format!(" AND model = ${}", idx));
             idx += 1;
@@ -419,7 +425,19 @@ impl Storage for PostgresStorage {
             sql.push_str(&format!(" AND provider = ${}", idx));
             idx += 1;
         }
-        sql.push_str(&format!(" ORDER BY timestamp DESC LIMIT ${}", idx));
+        if q.before_timestamp.is_some() && q.before_id.is_some() {
+            sql.push_str(&format!(
+                " AND (timestamp < ${} OR (timestamp = ${} AND id < ${}))",
+                idx,
+                idx + 1,
+                idx + 2,
+            ));
+            idx += 3;
+        }
+        sql.push_str(&format!(
+            " ORDER BY timestamp DESC, id DESC LIMIT ${}",
+            idx
+        ));
 
         let mut query = sqlx::query(&sql);
         if let Some(since) = &q.since {
@@ -428,11 +446,17 @@ impl Storage for PostgresStorage {
         if let Some(k) = &q.key_id {
             query = query.bind(k);
         }
+        if let Some(t) = &q.team {
+            query = query.bind(t);
+        }
         if let Some(m) = &q.model {
             query = query.bind(m);
         }
         if let Some(p) = &q.provider {
             query = query.bind(p);
+        }
+        if let (Some(ts), Some(id)) = (&q.before_timestamp, &q.before_id) {
+            query = query.bind(*ts).bind(*ts).bind(id);
         }
         let rows = query
             .bind(limit)
@@ -559,6 +583,33 @@ impl Storage for PostgresStorage {
         Ok(())
     }
 
+    async fn update_route(&self, route: PersistedRoute) -> Result<(), StorageError> {
+        let fallbacks_json = serde_json::to_value(&route.fallbacks)
+            .map_err(|e| StorageError::Backend(format!("serialize fallbacks: {}", e)))?;
+        let split_json = serde_json::to_value(&route.split)
+            .map_err(|e| StorageError::Backend(format!("serialize split: {}", e)))?;
+        let result = sqlx::query(
+            "UPDATE routes SET position = $1, match_model = $2, match_team = $3, \
+             primary_provider = $4, primary_model = $5, fallbacks_json = $6, split_json = $7 \
+             WHERE id = $8",
+        )
+        .bind(route.position)
+        .bind(&route.match_model)
+        .bind(&route.match_team)
+        .bind(&route.primary)
+        .bind(&route.primary_model)
+        .bind(&fallbacks_json)
+        .bind(&split_json)
+        .bind(&route.id)
+        .execute(&self.pool)
+        .await
+        .map_err(map_sqlx)?;
+        if result.rows_affected() == 0 {
+            return Err(StorageError::NotFound);
+        }
+        Ok(())
+    }
+
     async fn delete_route(&self, id: &str) -> Result<(), StorageError> {
         let result = sqlx::query("DELETE FROM routes WHERE id = $1")
             .bind(id)
@@ -596,6 +647,7 @@ fn rows_to_request_log(rows: &[PgRow]) -> Result<Vec<RequestLogEntry>, StorageEr
             status: r.try_get::<i32, _>("status").map_err(map_sqlx)? as u16,
             stream: r.try_get::<bool, _>("stream").map_err(map_sqlx)?,
             error: r.try_get("error").map_err(map_sqlx)?,
+            team: r.try_get("team").ok(),
             attempts,
         });
     }

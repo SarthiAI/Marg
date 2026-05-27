@@ -271,6 +271,47 @@ pub fn spec() -> Value {
                     "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }],
                     "responses": { "200": { "description": "Revoked." } }
                 }
+            },
+            "/admin/audit/entries": {
+                "get": {
+                    "summary": "Paginated view of the Kavach signed audit chain (in-memory).",
+                    "parameters": [
+                        { "name": "since", "in": "query", "schema": { "type": "integer", "minimum": 0 } },
+                        { "name": "limit", "in": "query", "schema": { "type": "integer", "minimum": 1, "maximum": 5000, "default": 100 } }
+                    ],
+                    "responses": { "200": { "description": "Audit entries." } }
+                }
+            },
+            "/admin/audit/export": {
+                "get": {
+                    "summary": "JSONL export of signed chain entries (one SignedAuditEntry per line).",
+                    "parameters": [
+                        { "name": "since", "in": "query", "schema": { "type": "integer", "minimum": 0 } }
+                    ],
+                    "responses": { "200": { "description": "JSONL stream.", "content": { "application/jsonl": { } } } }
+                }
+            },
+            "/admin/audit/verify": {
+                "post": {
+                    "summary": "Verify the live chain (default) or a JSONL file on disk.",
+                    "requestBody": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "properties": { "path": { "type": "string" } }
+                                }
+                            }
+                        }
+                    },
+                    "responses": { "200": { "description": "Verification result." } }
+                }
+            },
+            "/admin/audit/status": {
+                "get": {
+                    "summary": "Kavach status snapshot: mode, chain head, policy hash, permit knobs.",
+                    "responses": { "200": { "description": "Status." } }
+                }
             }
         }
     })

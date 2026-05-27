@@ -222,6 +222,13 @@ impl Storage for MeteredStorage {
         r
     }
 
+    async fn update_route(&self, route: PersistedRoute) -> Result<(), StorageError> {
+        let started = Instant::now();
+        let r = self.inner.update_route(route).await;
+        self.record("update_route", started);
+        r
+    }
+
     async fn delete_route(&self, id: &str) -> Result<(), StorageError> {
         let started = Instant::now();
         let r = self.inner.delete_route(id).await;

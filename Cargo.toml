@@ -55,6 +55,19 @@ hmac = "0.12"
 percent-encoding = "2"
 prometheus = { version = "0.13", default-features = false, features = ["process"] }
 
+# Kavach is a mandatory dependency for Marg v1.0. There is no Cargo feature
+# flag and no "pure proxy" build variant: every Marg binary embeds Kavach.
+# Version range locked at >=0.1.2, <0.2.0 (within-minor): patches flow through
+# `cargo update` without a Marg release; a 0.2.0 cut triggers a coordinated
+# Marg release. See ADR-001, ADR-010, ADR-011, ADR-015.
+#
+# 0.1.2 repins ml-dsa = "=0.1.0" (stable) upstream, which removes the
+# rc-vs-stable pkcs8 collision Marg worked around during P09 with a direct
+# pkcs8 = "=0.11.0-rc.11" workspace dep. That workaround is gone in P10.
+kavach-core  = ">=0.1.2, <0.2.0"
+kavach-pq    = ">=0.1.2, <0.2.0"
+kavach-redis = ">=0.1.2, <0.2.0"
+
 marg-core = { path = "marg-core" }
 marg-server = { path = "marg-server" }
 marg-storage = { path = "marg-storage" }

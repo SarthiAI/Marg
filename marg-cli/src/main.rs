@@ -54,6 +54,33 @@ enum Command {
         #[command(subcommand)]
         action: AdminCommand,
     },
+    /// Kavach policy and audit-chain tooling.
+    Policy {
+        #[command(subcommand)]
+        action: PolicyCommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum PolicyCommand {
+    /// Print would-refuse events from the Kavach signed audit chain (the
+    /// per-process JSONL files under [kavach].audit_export_path). Operators
+    /// use this in observe mode to tune their policy before flipping to
+    /// enforce.
+    Audit {
+        #[arg(long, default_value = "./marg.toml")]
+        config: String,
+        /// Only show events newer than this duration ago, e.g. `5m`, `2h`, `24h`.
+        #[arg(long)]
+        since: Option<String>,
+        /// Maximum rows to print.
+        #[arg(long, default_value_t = 100)]
+        limit: usize,
+        /// Optional explicit path: a JSONL file or a directory of audit
+        /// JSONL files. When omitted, [kavach].audit_export_path is used.
+        #[arg(long)]
+        path: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -209,6 +236,14 @@ async fn main() -> Result<()> {
                 AdminTokensCommand::List { config } => admin_tokens_list(&config).await,
                 AdminTokensCommand::Revoke { id, config } => admin_tokens_revoke(&config, &id).await,
             },
+        },
+        Command::Policy { action } => match action {
+            PolicyCommand::Audit {
+                config,
+                since,
+                limit,
+                path,
+            } => policy_audit(&config, since.as_deref(), limit, path.as_deref()).await,
         },
     }
 }
@@ -542,6 +577,227 @@ async fn admin_tokens_revoke(config_path: &str, id: &str) -> Result<()> {
         .with_context(|| format!("revoking admin token {}", id))?;
     println!("revoked admin token {}", id);
     Ok(())
+}
+
+/// Walk the Kavach audit JSONL files and print "would have refused" events.
+/// Reads the per-process JSONL files written by marg-server's audit flush
+/// task. Each line is a `SignedAuditEntry`; the Marg request-lifecycle JSON
+/// lives in `signed_payload.data`. We only surface entries whose schema is
+/// `marg.request.v1` and whose `verdict.real_kind != "permit"`.
+async fn policy_audit(
+    config_path: &str,
+    since: Option<&str>,
+    limit: usize,
+    explicit_path: Option<&str>,
+) -> Result<()> {
+    let source_path = if let Some(p) = explicit_path {
+        std::path::PathBuf::from(p)
+    } else {
+        let cfg = Config::load(config_path)
+            .with_context(|| format!("loading config from {}", config_path))?;
+        std::path::PathBuf::from(cfg.kavach.audit_export_path)
+    };
+
+    let since_cutoff = since
+        .map(parse_since)
+        .transpose()
+        .with_context(|| "parsing --since")?;
+
+    let files = collect_jsonl_files(&source_path)?;
+    if files.is_empty() {
+        println!("no audit JSONL files found at {}", source_path.display());
+        return Ok(());
+    }
+
+    let mut rows: Vec<AuditRow> = Vec::new();
+    for f in &files {
+        let bytes = std::fs::read(f).with_context(|| format!("reading {}", f.display()))?;
+        let parsed = kavach_pq::audit::parse_jsonl(&bytes)
+            .with_context(|| format!("parsing JSONL at {}", f.display()))?;
+        for entry in parsed {
+            let inner: serde_json::Value =
+                serde_json::from_slice(&entry.signed_payload.data).unwrap_or(serde_json::Value::Null);
+            let schema = inner
+                .get("schema")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            if schema != "marg.request.v1" {
+                continue;
+            }
+            let real_kind = inner
+                .get("verdict")
+                .and_then(|v| v.get("real_kind"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("permit");
+            if real_kind == "permit" {
+                continue;
+            }
+            let ts: Option<chrono::DateTime<Utc>> = inner
+                .get("timestamp")
+                .and_then(|v| v.as_str())
+                .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+                .map(|dt| dt.with_timezone(&Utc));
+            if let (Some(cutoff), Some(ts)) = (since_cutoff, ts) {
+                if ts < cutoff {
+                    continue;
+                }
+            }
+            rows.push(AuditRow {
+                index: entry.index,
+                timestamp: ts,
+                mode: inner
+                    .get("mode")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("?")
+                    .to_string(),
+                real_kind: real_kind.to_string(),
+                effective_kind: inner
+                    .get("verdict")
+                    .and_then(|v| v.get("effective_kind"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("?")
+                    .to_string(),
+                principal: inner
+                    .get("principal_id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("?")
+                    .to_string(),
+                action: inner
+                    .get("action_name")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("?")
+                    .to_string(),
+                evaluator: inner
+                    .get("verdict")
+                    .and_then(|v| v.get("evaluator"))
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string()),
+                reason_code: inner
+                    .get("verdict")
+                    .and_then(|v| v.get("reason_code"))
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string()),
+                reason_text: inner
+                    .get("verdict")
+                    .and_then(|v| v.get("reason_text"))
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string()),
+            });
+        }
+    }
+
+    rows.sort_by(|a, b| a.timestamp.cmp(&b.timestamp));
+    let total = rows.len();
+    let display = rows.into_iter().rev().take(limit).rev().collect::<Vec<_>>();
+
+    if display.is_empty() {
+        println!("no would-refuse events found");
+        return Ok(());
+    }
+
+    println!(
+        "{:<6}  {:<20}  {:<8}  {:<10}  {:<10}  {:<24}  {:<28}  {}",
+        "idx", "timestamp", "mode", "real", "effective", "principal", "action", "reason"
+    );
+    for r in display {
+        let reason = format!(
+            "[{}] {}: {}",
+            r.reason_code.as_deref().unwrap_or("-"),
+            r.evaluator.as_deref().unwrap_or("-"),
+            r.reason_text.as_deref().unwrap_or("-")
+        );
+        println!(
+            "{:<6}  {:<20}  {:<8}  {:<10}  {:<10}  {:<24}  {:<28}  {}",
+            r.index,
+            r.timestamp
+                .map(|t| t.format("%Y-%m-%dT%H:%M:%SZ").to_string())
+                .unwrap_or_else(|| "-".to_string()),
+            r.mode,
+            r.real_kind,
+            r.effective_kind,
+            truncate(&r.principal, 24),
+            truncate(&r.action, 28),
+            reason,
+        );
+    }
+    println!();
+    println!("({} matching events total)", total);
+    Ok(())
+}
+
+struct AuditRow {
+    index: u64,
+    timestamp: Option<chrono::DateTime<Utc>>,
+    mode: String,
+    real_kind: String,
+    effective_kind: String,
+    principal: String,
+    action: String,
+    evaluator: Option<String>,
+    reason_code: Option<String>,
+    reason_text: Option<String>,
+}
+
+fn truncate(s: &str, n: usize) -> String {
+    if s.chars().count() <= n {
+        s.to_string()
+    } else {
+        let mut out: String = s.chars().take(n.saturating_sub(1)).collect();
+        out.push('…');
+        out
+    }
+}
+
+fn parse_since(raw: &str) -> Result<chrono::DateTime<Utc>> {
+    let trimmed = raw.trim();
+    let (num_part, suffix) = split_duration(trimmed);
+    let n: i64 = num_part
+        .parse()
+        .map_err(|_| anyhow!("invalid duration value '{}'", num_part))?;
+    let delta = match suffix {
+        "s" => chrono::Duration::seconds(n),
+        "m" => chrono::Duration::minutes(n),
+        "h" => chrono::Duration::hours(n),
+        "d" => chrono::Duration::days(n),
+        _ => return Err(anyhow!("invalid duration suffix '{}' (use s/m/h/d)", suffix)),
+    };
+    Ok(Utc::now() - delta)
+}
+
+fn split_duration(raw: &str) -> (&str, &str) {
+    let pos = raw
+        .char_indices()
+        .find(|(_, c)| !c.is_ascii_digit())
+        .map(|(i, _)| i)
+        .unwrap_or(raw.len());
+    raw.split_at(pos)
+}
+
+fn collect_jsonl_files(path: &std::path::Path) -> Result<Vec<std::path::PathBuf>> {
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+    let mut out = Vec::new();
+    if path.is_file() {
+        out.push(path.to_path_buf());
+        return Ok(out);
+    }
+    for entry in std::fs::read_dir(path)
+        .with_context(|| format!("listing {}", path.display()))?
+        .flatten()
+    {
+        let p = entry.path();
+        if p.is_file()
+            && p.file_name()
+                .and_then(|s| s.to_str())
+                .map(|n| n.ends_with(".jsonl"))
+                .unwrap_or(false)
+        {
+            out.push(p);
+        }
+    }
+    out.sort();
+    Ok(out)
 }
 
 fn write_token_file(path: &str, contents: &str) -> std::io::Result<()> {

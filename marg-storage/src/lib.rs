@@ -96,6 +96,7 @@ pub trait Storage: Send + Sync {
 
     async fn list_routes(&self) -> Result<Vec<PersistedRoute>, StorageError>;
     async fn insert_route(&self, route: PersistedRoute) -> Result<(), StorageError>;
+    async fn update_route(&self, route: PersistedRoute) -> Result<(), StorageError>;
     async fn delete_route(&self, id: &str) -> Result<(), StorageError>;
 }
 
@@ -105,7 +106,12 @@ pub trait Storage: Send + Sync {
 pub struct RequestLogQuery {
     pub since: Option<chrono::DateTime<chrono::Utc>>,
     pub key_id: Option<String>,
+    pub team: Option<String>,
     pub model: Option<String>,
     pub provider: Option<String>,
+    /// Cursor: timestamp of the last row from the previous page. Rows with
+    /// the exact same timestamp are disambiguated by [`Self::before_id`].
+    pub before_timestamp: Option<chrono::DateTime<chrono::Utc>>,
+    pub before_id: Option<String>,
     pub limit: u32,
 }

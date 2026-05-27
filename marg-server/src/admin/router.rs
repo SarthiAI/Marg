@@ -1,5 +1,5 @@
 use axum::middleware;
-use axum::routing::{delete, get, post};
+use axum::routing::{delete, get, post, put};
 use axum::Router;
 
 use crate::admin::auth::require_admin_token;
@@ -18,6 +18,10 @@ pub fn build_router(state: AppState) -> Router {
         .route("/admin/budgets", post(handlers::budgets::upsert))
         .route("/admin/budgets/:key_id", get(handlers::budgets::get))
         .route("/admin/routes", get(handlers::routes::list).post(handlers::routes::create))
+        .route(
+            "/admin/routes/:id",
+            put(handlers::routes::update).delete(handlers::routes::delete),
+        )
         .route("/admin/policy", get(handlers::policy::view))
         .route("/admin/policy/reload", post(handlers::policy::reload))
         .route("/admin/providers/health", get(handlers::providers::health))
@@ -27,6 +31,10 @@ pub fn build_router(state: AppState) -> Router {
             post(handlers::auth_tokens::create).get(handlers::auth_tokens::list),
         )
         .route("/admin/auth/tokens/:id", delete(handlers::auth_tokens::revoke))
+        .route("/admin/audit/entries", get(handlers::audit::list))
+        .route("/admin/audit/export", get(handlers::audit::export))
+        .route("/admin/audit/verify", post(handlers::audit::verify))
+        .route("/admin/audit/status", get(handlers::audit::status))
         .with_state(state.clone())
         .layer(middleware::from_fn_with_state(state.clone(), require_admin_token));
 

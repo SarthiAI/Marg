@@ -168,3 +168,129 @@ strict_mode = false
 #   { provider = "openai", weight = 50 },
 #   { provider = "anthropic", weight = 50, model = "claude-3-5-sonnet" },
 # ]
+
+# ============================================================================
+# Kavach (P09). Marg v1.0 always boots with Kavach embedded; there is no
+# Cargo feature flag (ADR-011). Choose mode at runtime. First boot defaults
+# to observe so operators tune policy before flipping to enforce (ADR-003).
+# ============================================================================
+
+[kavach]
+# "observe" logs every gate verdict but never blocks the request.
+# "enforce" applies default-deny: refused requests return 403.
+mode = "observe"
+# Production-grade default: a separate file (DevOps owns marg.toml,
+# Security / Compliance owns policy.toml). Three accepted shapes:
+#   policy_path = "/etc/marg/policy.toml"        single file
+#   policy_path = "/etc/marg/policies/"          directory of *.toml files
+#   policy_path = unset                          inline `[[policy]]` /
+#                                                `[[invariant]]` blocks at
+#                                                the top of THIS marg.toml
+# See ADR-014.
+# policy_path = "/etc/marg/policy.toml"
+
+# Where the signing keypair lives. Auto-generated mode 0640 on first boot.
+# Back this file up: losing it makes the audit chain unverifiable.
+keypair_path = "./marg.key"
+
+# Where the periodic audit-chain export lands. One JSONL file per process
+# lifetime (cross-restart chain merging is a v1.1 concern, see
+# docs/cluster-deployment.md). The directory is auto-created.
+audit_export_path = "./audit/"
+
+# How often the in-memory chain is flushed to disk. Default 60s keeps the
+# crash-loss bound at one minute of traffic.
+audit_flush_seconds = 60
+
+# true (default) signs every entry with ML-DSA-65 + Ed25519 hybrid.
+# false signs ML-DSA-65 only (smaller signatures, slightly faster).
+audit_hybrid = true
+
+# false (default) keeps prompt text out of the signed chain. true bundles
+# the raw request body into context_snapshot for forensic replay; only
+# enable in environments where the chain itself is a privileged surface.
+include_prompts = false
+
+# Surface the signed PermitToken to the caller in `X-Kavach-Permit` so
+# downstream tools can verify it. Default off.
+expose_permit_to_caller = false
+
+# Forward the same `X-Kavach-Permit` header to the upstream provider call.
+# Most providers ignore it; turn on only when the upstream verifier exists.
+forward_permit_to_provider = false
+
+# How long a permit token is valid before execute() refuses to honor it.
+# Kavach default is 30s. Raise for slow upstream regions / cold-start LLMs.
+permit_ttl_seconds = 30
+
+# Permit signer hybrid mode. None (default) inherits `audit_hybrid` so the
+# permit signer and audit chain stay in lockstep. Set explicitly when an
+# operator wants e.g. hybrid audit but pq-only permits to keep the
+# `x-kavach-permit` header smaller.
+# permit_signer_hybrid = true
+
+[kavach.drift]
+# Marg ships with Kavach's four built-in drift detectors. Each detector is
+# inert until its config knob is set, so a fully-default marg.toml has no
+# drift triggers, matching the "observe first, drift later" rollout.
+#
+# Geo drift: tolerant mode. IP change within `km` is a warning, beyond is a
+# violation. Requires the load balancer to attach `x-forwarded-geo` on
+# ingress, see docs/kavach.md for the header shape. Omit to disable.
+# geo_max_distance_km = 200
+#
+# Session-age drift: session older than this triggers a violation; a
+# warning fires at 75% of the cap. Accepts "Ns" / "Nm" / "Nh" / "Nd" or a
+# bare seconds integer.
+# session_age_max = "24h"
+#
+# Device-fingerprint drift: requires the load balancer (or upstream auth
+# proxy) to attach `x-marg-device-fingerprint` on ingress. When enabled,
+# Marg compares the current fingerprint hash against the value persisted
+# on the session row at first-sighting.
+# device_fingerprint_enabled = false
+#
+# Behavior drift: actions-per-minute thresholds. Setting only one of the
+# two enables the detector; if `_warn` is omitted Marg picks half of
+# `_violation`. The pair `(warn, violation)` must be strictly increasing.
+# behavior_rate_warn = 100
+# behavior_rate_violation = 500
+
+# ----------------------------------------------------------------------------
+# Inline policy / invariants for dev only. PRODUCTION should set
+# [kavach].policy_path above and keep this section empty. If policy_path is
+# set AND inline blocks are present, the inline blocks are dropped at boot
+# with a warn log.
+#
+# Schema is Kavach's own (kavach-core 0.1.0, see crate docs). Common
+# conditions:
+#   identity_role = "engineer"
+#   identity_kind = "agent"
+#   action = "marg.chat.gpt-4o"
+#   param_max = { field = "max_tokens", max = 4000 }
+#   param_in  = { field = "team", values = ["billing", "support"] }
+#   time_window = "09:00-19:00 Asia/Kolkata"
+#   rate_limit = { max = 60, window = "1m" }
+#
+# [[policy]]
+# name = "engineers_can_use_gpt4"
+# effect = "permit"
+# conditions = [
+#     { identity_role = "engineer" },
+#     { action = "marg.chat.gpt-4*" },
+#     { param_max = { field = "max_tokens", max = 4000 } },
+# ]
+#
+# Invariants are hard limits Kavach enforces ahead of any policy. The Marg
+# `kind` field maps to the Kavach Invariant::* builder:
+#
+# [[invariant]]
+# kind = "param_max"
+# name = "no_huge_single_request"
+# field = "max_tokens"
+# max = 32000
+#
+# [[invariant]]
+# kind = "max_actions_per_session"
+# name = "no_runaway_agent"
+# max = 200

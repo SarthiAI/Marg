@@ -303,8 +303,8 @@ impl Storage for SqliteStorage {
         };
         sqlx::query(
             "INSERT INTO request_log (id, timestamp, key_id, principal_id, provider, model, \
-             input_tokens, output_tokens, cost_usd, latency_ms, status, stream, error, attempts) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+             input_tokens, output_tokens, cost_usd, latency_ms, status, stream, error, team, attempts) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(&entry.id)
         .bind(entry.timestamp.to_rfc3339())
@@ -319,6 +319,7 @@ impl Storage for SqliteStorage {
         .bind(entry.status as i64)
         .bind(if entry.stream { 1i64 } else { 0i64 })
         .bind(&entry.error)
+        .bind(&entry.team)
         .bind(&attempts_json)
         .execute(&self.pool)
         .await
@@ -345,8 +346,8 @@ impl Storage for SqliteStorage {
             };
             sqlx::query(
                 "INSERT INTO request_log (id, timestamp, key_id, principal_id, provider, model, \
-                 input_tokens, output_tokens, cost_usd, latency_ms, status, stream, error, attempts) \
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                 input_tokens, output_tokens, cost_usd, latency_ms, status, stream, error, team, attempts) \
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             )
             .bind(&entry.id)
             .bind(entry.timestamp.to_rfc3339())
@@ -361,6 +362,7 @@ impl Storage for SqliteStorage {
             .bind(entry.status as i64)
             .bind(if entry.stream { 1i64 } else { 0i64 })
             .bind(&entry.error)
+            .bind(&entry.team)
             .bind(&attempts_json)
             .execute(&mut *tx)
             .await
@@ -404,13 +406,21 @@ impl Storage for SqliteStorage {
         if q.key_id.is_some() {
             sql.push_str(" AND key_id = ?");
         }
+        if q.team.is_some() {
+            sql.push_str(" AND team = ?");
+        }
         if q.model.is_some() {
             sql.push_str(" AND model = ?");
         }
         if q.provider.is_some() {
             sql.push_str(" AND provider = ?");
         }
-        sql.push_str(" ORDER BY timestamp DESC LIMIT ?");
+        if q.before_timestamp.is_some() && q.before_id.is_some() {
+            // (timestamp, id) strict-less-than tuple. The ORDER BY below sorts
+            // on the same tuple, so this cursor walks strictly older rows.
+            sql.push_str(" AND (timestamp < ? OR (timestamp = ? AND id < ?))");
+        }
+        sql.push_str(" ORDER BY timestamp DESC, id DESC LIMIT ?");
 
         let mut query = sqlx::query(&sql);
         if let Some(since) = &q.since {
@@ -419,11 +429,18 @@ impl Storage for SqliteStorage {
         if let Some(k) = &q.key_id {
             query = query.bind(k);
         }
+        if let Some(t) = &q.team {
+            query = query.bind(t);
+        }
         if let Some(m) = &q.model {
             query = query.bind(m);
         }
         if let Some(p) = &q.provider {
             query = query.bind(p);
+        }
+        if let (Some(ts), Some(id)) = (&q.before_timestamp, &q.before_id) {
+            let ts_str = ts.to_rfc3339();
+            query = query.bind(ts_str.clone()).bind(ts_str).bind(id);
         }
         let rows = query
             .bind(limit)
@@ -553,6 +570,33 @@ impl Storage for SqliteStorage {
         Ok(())
     }
 
+    async fn update_route(&self, route: PersistedRoute) -> Result<(), StorageError> {
+        let fallbacks_json = serde_json::to_string(&route.fallbacks)
+            .map_err(|e| StorageError::Backend(format!("serialize fallbacks: {}", e)))?;
+        let split_json = serde_json::to_string(&route.split)
+            .map_err(|e| StorageError::Backend(format!("serialize split: {}", e)))?;
+        let result = sqlx::query(
+            "UPDATE routes SET position = ?, match_model = ?, match_team = ?, \
+             primary_provider = ?, primary_model = ?, fallbacks_json = ?, split_json = ? \
+             WHERE id = ?",
+        )
+        .bind(route.position)
+        .bind(&route.match_model)
+        .bind(&route.match_team)
+        .bind(&route.primary)
+        .bind(&route.primary_model)
+        .bind(&fallbacks_json)
+        .bind(&split_json)
+        .bind(&route.id)
+        .execute(&self.pool)
+        .await
+        .map_err(map_sqlx)?;
+        if result.rows_affected() == 0 {
+            return Err(StorageError::NotFound);
+        }
+        Ok(())
+    }
+
     async fn delete_route(&self, id: &str) -> Result<(), StorageError> {
         let result = sqlx::query("DELETE FROM routes WHERE id = ?")
             .bind(id)
@@ -594,6 +638,7 @@ fn rows_to_request_log(
             status: r.try_get::<i64, _>("status").map_err(map_sqlx)? as u16,
             stream: stream_int != 0,
             error: r.try_get("error").map_err(map_sqlx)?,
+            team: r.try_get("team").ok(),
             attempts,
         });
     }

@@ -1,4 +1,4 @@
-import { clearToken, getOpenApi, getToken } from "./api";
+import { clearToken, getKavachStatus, getOpenApi, getToken } from "./api";
 import { h } from "./dom";
 import { currentPath, mountRouter, navigate, registerRoute } from "./router";
 import { showLogin } from "./pages/login";
@@ -10,6 +10,7 @@ import { renderPolicy } from "./pages/policy";
 import { renderProviders } from "./pages/providers";
 import { renderRequests } from "./pages/requests";
 import { renderAdminTokens } from "./pages/admin_tokens";
+import { renderAudit } from "./pages/audit";
 
 interface NavLink { path: string; label: string; }
 const links: NavLink[] = [
@@ -20,14 +21,24 @@ const links: NavLink[] = [
   { path: "/policy", label: "Policy" },
   { path: "/providers", label: "Providers" },
   { path: "/requests", label: "Requests" },
+  { path: "/audit", label: "Audit" },
   { path: "/admin-tokens", label: "Admin tokens" },
 ];
 
 let version = "";
 
-function buildShell(): { outlet: HTMLElement; titleEl: HTMLElement } {
+function buildShell(): { outlet: HTMLElement; titleEl: HTMLElement; kavachBadge: HTMLElement } {
   const titleEl = h("div", { class: "title" });
   const tokenChipEl = buildTokenChip();
+  const kavachBadge = h(
+    "span",
+    {
+      class: "badge code",
+      title: "Kavach mode (observe = log only, enforce = default-deny)",
+      style: { fontSize: "11px", marginRight: "8px" },
+    },
+    "kavach: ?",
+  );
   const themeBtn = h(
     "button",
     {
@@ -46,7 +57,7 @@ function buildShell(): { outlet: HTMLElement; titleEl: HTMLElement } {
   const topbar = h("div", { class: "topbar" }, [
     h("div", { class: "brand" }, "Marg"),
     titleEl,
-    h("div", { class: "actions" }, [themeBtn, tokenChipEl]),
+    h("div", { class: "actions" }, [kavachBadge, themeBtn, tokenChipEl]),
   ]);
 
   const rail = h(
@@ -78,7 +89,7 @@ function buildShell(): { outlet: HTMLElement; titleEl: HTMLElement } {
   ]);
 
   document.body.replaceChildren(app);
-  return { outlet, titleEl };
+  return { outlet, titleEl, kavachBadge };
 }
 
 function buildTokenChip(): HTMLElement {
@@ -130,7 +141,11 @@ export function mountApp(): void {
     showLogin(mountApp);
     return;
   }
-  const { outlet, titleEl } = buildShell();
+  const { outlet, titleEl, kavachBadge } = buildShell();
+  registerRoute("/audit", (target, _params, signal) => {
+    titleEl.textContent = "Audit chain";
+    return renderAudit(target, signal);
+  });
   registerRoute("/dashboard", (target, _params, signal) => {
     titleEl.textContent = "Dashboard";
     return renderDashboard(target, signal);
@@ -182,4 +197,20 @@ export function mountApp(): void {
     version = s.info?.version ?? "";
     updateFooter();
   }).catch(() => undefined);
+
+  void refreshKavachBadge(kavachBadge);
+  window.setInterval(() => void refreshKavachBadge(kavachBadge), 30_000);
+}
+
+async function refreshKavachBadge(badge: HTMLElement): Promise<void> {
+  try {
+    const status = await getKavachStatus();
+    const mode = status.mode ?? "?";
+    badge.textContent = `kavach: ${mode}`;
+    badge.classList.remove("ok", "code", "err");
+    badge.classList.add(mode === "enforce" ? "ok" : "code");
+    badge.title = `Kavach ${status.kavach_core_version} (${mode}), chain length ${status.audit_chain.length}`;
+  } catch (_e) {
+    badge.textContent = "kavach: ?";
+  }
 }

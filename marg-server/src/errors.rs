@@ -77,6 +77,24 @@ pub enum ChatError {
 
     #[error("internal error: {0}")]
     Internal(String),
+
+    /// Kavach refused the action in enforce mode. Surfaces as 403 with
+    /// `x-marg-reason: kavach_refuse` and a machine-readable Kavach refuse
+    /// code in `x-kavach-refuse-code`.
+    #[error("kavach refused: [{code}] {evaluator}: {reason}")]
+    KavachRefuse {
+        code: String,
+        evaluator: String,
+        reason: String,
+    },
+
+    /// Kavach revoked broader authority for this principal/session. Same 403
+    /// shape as `KavachRefuse`, but `x-marg-reason: kavach_invalidate`.
+    #[error("kavach invalidated session: {evaluator}: {reason}")]
+    KavachInvalidate {
+        evaluator: String,
+        reason: String,
+    },
 }
 
 impl ChatError {
@@ -122,11 +140,26 @@ impl IntoResponse for ChatError {
                 (s, "upstream_error")
             }
             ChatError::AllAttemptsFailed { .. } => (StatusCode::BAD_GATEWAY, "all_attempts_failed"),
+            ChatError::KavachRefuse { .. } => (StatusCode::FORBIDDEN, "kavach_refuse"),
+            ChatError::KavachInvalidate { .. } => (StatusCode::FORBIDDEN, "kavach_invalidate"),
         };
 
         let mut headers = HeaderMap::new();
         if let Ok(v) = HeaderValue::from_str(code) {
             headers.insert("x-marg-reason", v);
+        }
+        if let ChatError::KavachRefuse { code, evaluator, .. } = &self {
+            if let Ok(v) = HeaderValue::from_str(code) {
+                headers.insert("x-kavach-refuse-code", v);
+            }
+            if let Ok(v) = HeaderValue::from_str(evaluator) {
+                headers.insert("x-kavach-evaluator", v);
+            }
+        }
+        if let ChatError::KavachInvalidate { evaluator, .. } = &self {
+            if let Ok(v) = HeaderValue::from_str(evaluator) {
+                headers.insert("x-kavach-evaluator", v);
+            }
         }
         let attempts = self.attempts();
         if !attempts.is_empty() {

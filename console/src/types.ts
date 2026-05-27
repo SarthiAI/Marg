@@ -66,6 +66,38 @@ export interface PricingEntry {
   output_per_1k_usd: number;
 }
 
+export interface KavachDriftDetectorView {
+  name: string;
+  parameters: Record<string, unknown>;
+}
+
+export interface KavachDriftView {
+  enabled: boolean;
+  warning_threshold: number;
+  detectors: KavachDriftDetectorView[];
+}
+
+export interface KavachPermitSignerView {
+  enabled: boolean;
+  algorithm: string;
+  key_id: string;
+}
+
+export interface KavachPolicyView {
+  mode: "observe" | "enforce" | string;
+  policy_path: string | null;
+  policy_source_hash: string;
+  loaded_at: string;
+  policy_rule_count: number;
+  invariant_count: number;
+  audit_chain_length: number;
+  audit_chain_head_hash: string;
+  core_version: string;
+  pq_version: string;
+  permit_signer: KavachPermitSignerView;
+  drift: KavachDriftView;
+}
+
 export interface PolicyView {
   config_path: string;
   providers: string[];
@@ -73,6 +105,53 @@ export interface PolicyView {
   config_routes: ConfigRoute[];
   stored_routes: PersistedRoute[];
   pricing: PricingEntry[];
+  kavach: KavachPolicyView;
+}
+
+export interface KavachAuditStatus {
+  mode: string;
+  kavach_core_version: string;
+  kavach_pq_version: string;
+  audit_chain: { head_hash: string; length: number };
+  policy: {
+    source_path: string | null;
+    source_hash: string;
+    loaded_at: string;
+    rule_count: number;
+    invariant_count: number;
+  };
+  permits: {
+    expose_to_caller: boolean;
+    forward_to_provider: boolean;
+    ttl_seconds: number;
+    signer: KavachPermitSignerView;
+  };
+  drift: KavachDriftView;
+}
+
+export interface KavachAuditEntryView {
+  index: number;
+  previous_hash: string;
+  entry_hash: string;
+  mode: string;
+  signed_payload_key_id: string;
+  signed_payload_signed_at: string;
+  data: Record<string, unknown> | null;
+}
+
+export interface KavachAuditEntriesResponse {
+  head_hash: string;
+  total: number;
+  from: number;
+  count: number;
+  entries: KavachAuditEntryView[];
+}
+
+export interface KavachVerifyResponse {
+  verified: boolean;
+  source: string;
+  count: number;
+  error?: string;
 }
 
 export interface ProviderHealth {

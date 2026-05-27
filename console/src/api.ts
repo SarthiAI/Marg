@@ -4,6 +4,9 @@ import {
   ApiErrorBody,
   BudgetSnapshot,
   BudgetSpec,
+  KavachAuditEntriesResponse,
+  KavachAuditStatus,
+  KavachVerifyResponse,
   MargKey,
   PersistedRoute,
   PolicyView,
@@ -243,4 +246,30 @@ export async function revokeAdminToken(id: string, signal?: AbortSignal): Promis
 
 export async function getOpenApi(signal?: AbortSignal): Promise<{ info: { version: string } }> {
   return call(`/admin/openapi.json`, { signal });
+}
+
+export async function getKavachStatus(signal?: AbortSignal): Promise<KavachAuditStatus> {
+  return call(`/admin/audit/status`, { signal });
+}
+
+export async function listKavachAuditEntries(
+  params: { since?: number; limit?: number } = {},
+  signal?: AbortSignal,
+): Promise<KavachAuditEntriesResponse> {
+  const q = new URLSearchParams();
+  if (params.since !== undefined) q.set("since", String(params.since));
+  if (params.limit !== undefined) q.set("limit", String(params.limit));
+  const qs = q.toString();
+  return call(`/admin/audit/entries${qs ? `?${qs}` : ""}`, { signal });
+}
+
+export async function verifyAuditChain(
+  body: { path?: string } = {},
+  signal?: AbortSignal,
+): Promise<KavachVerifyResponse> {
+  return call(`/admin/audit/verify`, {
+    method: "POST",
+    body: JSON.stringify(body),
+    signal,
+  });
 }

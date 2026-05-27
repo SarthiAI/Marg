@@ -1,3 +1,4 @@
+pub mod audit;
 pub mod auth_tokens;
 pub mod budgets;
 pub mod keys;

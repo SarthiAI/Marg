@@ -1,0 +1,74 @@
+# /etc/marg/policy.toml
+# Kavach policy file (Security / Compliance owns).
+#
+# Marg loads this file when [kavach].policy_path is set in marg.toml. The
+# schema below is Kavach's own (kavach-core 0.1.0). Marg passes the policy
+# bytes through unchanged; Kavach is the authoritative parser.
+#
+# Two top-level array-of-tables:
+#   [[policy]]    permit / refuse rules, evaluated in priority order
+#   [[invariant]] hard limits enforced ahead of any policy
+#
+# Hot reload: `POST /admin/policy/reload` or `kill -HUP <pid>` re-reads this
+# file and atomically swaps the active rule set under one transactional
+# swap (alongside Marg routing). A malformed file aborts the reload and
+# the previous good rules keep serving.
+
+# ---------- Policies --------------------------------------------------------
+
+[[policy]]
+name = "engineers_can_use_gpt4"
+effect = "permit"
+priority = 50
+conditions = [
+    { identity_role = "engineer" },
+    { action = "marg.chat.gpt-4*" },
+    { param_max = { field = "max_tokens", max = 4000 } },
+]
+
+[[policy]]
+name = "support_agents_use_claude_haiku"
+effect = "permit"
+priority = 50
+conditions = [
+    { identity_role = "team:support" },
+    { action = "marg.chat.claude-3-haiku*" },
+    { param_max = { field = "estimated_cost_usd", max = 0.10 } },
+]
+
+[[policy]]
+name = "block_known_bad_models"
+effect = "refuse"
+priority = 10
+conditions = [
+    { action = "marg.chat.gpt-3.5-turbo-0301" },
+]
+
+# ---------- Invariants (hard limits) ----------------------------------------
+#
+# Invariants run after policies. An invariant violation refuses the request
+# even if a policy permits it. Use them for absolute architectural limits.
+# Supported `kind` values map to the kavach-core Invariant::* builders:
+#   param_max                  numeric param ceiling
+#   param_min                  numeric param floor
+#   max_actions_per_session    runaway-agent safety
+#   max_session_age            session must be younger than max_seconds
+#   allowed_actions            only these action names may run
+#   blocked_actions            none of these action names may run
+
+[[invariant]]
+kind = "param_max"
+name = "no_huge_single_request"
+field = "max_tokens"
+max = 32000
+
+[[invariant]]
+kind = "param_max"
+name = "no_huge_single_cost"
+field = "estimated_cost_usd"
+max = 50.0
+
+[[invariant]]
+kind = "max_actions_per_session"
+name = "no_runaway_agent"
+max = 200

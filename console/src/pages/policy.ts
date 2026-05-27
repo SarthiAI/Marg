@@ -66,6 +66,13 @@ export async function renderPolicy(target: HTMLElement, signal: AbortSignal): Pr
   async function refresh(): Promise<void> {
     try {
       const pol = await getPolicy(signal);
+      const k = pol.kavach;
+      const driftSummary = k.drift.enabled
+        ? `${k.drift.detectors.length} active (warn threshold ${k.drift.warning_threshold})`
+        : "disabled";
+      const driftDetail = k.drift.detectors
+        .map((d) => `${d.name} ${JSON.stringify(d.parameters)}`)
+        .join("; ") || "(none)";
       headerInfo.replaceChildren(
         h("h3", { style: { marginTop: 0, fontSize: "14px" } }, "Loaded from"),
         kv([
@@ -73,6 +80,24 @@ export async function renderPolicy(target: HTMLElement, signal: AbortSignal): Pr
           ["Default provider", pol.default_provider ?? "(first registered)"],
           ["Registered providers", pol.providers.join(", ") || "(none)"],
           ["Last refreshed", fmtIso(new Date().toISOString())],
+        ]),
+        h("h3", { style: { marginTop: "12px", fontSize: "14px" } }, [
+          "Kavach ",
+          h("span", { class: `badge ${k.mode === "enforce" ? "ok" : "code"}` }, k.mode),
+        ]),
+        kv([
+          ["Policy path", k.policy_path ?? "(inline in marg.toml)"],
+          ["Policy hash", k.policy_source_hash],
+          ["Loaded at", fmtIso(k.loaded_at)],
+          ["Policy rules", String(k.policy_rule_count)],
+          ["Invariants", String(k.invariant_count)],
+          ["Audit chain length", String(k.audit_chain_length)],
+          ["Chain head hash", k.audit_chain_head_hash],
+          ["Permit signer", `${k.permit_signer.enabled ? "on" : "off"} (${k.permit_signer.algorithm}, key ${k.permit_signer.key_id})`],
+          ["Drift detection", driftSummary],
+          ["Drift detectors", driftDetail],
+          ["kavach-core", k.core_version],
+          ["kavach-pq", k.pq_version],
         ]),
       );
 

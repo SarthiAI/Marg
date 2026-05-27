@@ -17,6 +17,8 @@ pub struct RequestLogEntry {
     pub stream: bool,
     pub error: Option<String>,
     #[serde(default)]
+    pub team: Option<String>,
+    #[serde(default)]
     pub attempts: Vec<RouteAttempt>,
 }
 

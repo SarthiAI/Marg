@@ -2,6 +2,7 @@ pub mod admin;
 pub mod budget;
 pub mod config;
 pub mod error;
+pub mod kavach;
 pub mod key;
 pub mod pricing;
 pub mod principal;
@@ -17,6 +18,10 @@ pub use config::{
     RateLimitsConfig, SecurityConfig, ServerConfig, StorageConfig, WriteBatcherConfig,
 };
 pub use error::ConfigError;
+pub use kavach::{
+    load_kavach_policy, InvariantToml, KavachConfig, KavachDriftConfig, KavachPolicyFile,
+    LoadedKavachPolicy,
+};
 pub use key::{KeyStatus, MargKey, MargToken, NewKey, TOKEN_PREFIX};
 pub use pricing::{ModelPrice, PricingTable};
 pub use principal::{Principal, PrincipalKind};

@@ -169,8 +169,11 @@ operator's IAM, not in Marg.
   drops entries.
 
 The full tamper-evident, post-quantum signed audit chain is a
-v2.0 feature (Kavach). v1.0 carries the operational request log
-only.
+mandatory v1.0 feature backed by Kavach (ADR-010 / ADR-011). Marg
+appends one signed entry per request to a `SignedAuditChain` and
+ships permit tokens that are ML-DSA-65 (+ optional Ed25519) signed
+end-to-end. The operational request log lives alongside it for
+metrics and admin UI consumption.
 
 ## Cryptography in v1.0
 
@@ -184,8 +187,12 @@ only.
   `sha2`. The signer is feature-by-feature compatible with the
   AWS docs; no rolling-your-own primitives.
 
-Post-quantum signatures (ML-DSA-65 + Ed25519 hybrid via Kavach)
-ship in v2.0.
+Post-quantum signatures (ML-DSA-65 + Ed25519 hybrid via Kavach) are
+baked into the v1.0 binary. Every audit chain entry and every
+permit token carries a signature; the `[kavach].audit_hybrid` and
+`[kavach].permit_signer_hybrid` knobs control whether the hybrid
+Ed25519 companion runs alongside ML-DSA-65 or whether the signer
+runs PQ-only.
 
 ## Dependencies
 
@@ -237,3 +244,7 @@ add rows as the surface grows.
 | Streaming: client drop cancels upstream | yes | `chat.rs::stream_response` breaks the loop on the first failed `tx.send` and drops `byte_stream`, which aborts the reqwest streaming request to the upstream provider. `marg_provider_errors_total{kind="client_disconnect"}` increments. The request is logged with status 499. |
 | Write batcher overflow refuses (never silently drops) | yes | `chat.rs::non_stream_response` and `chat.rs::stream_response` route every `add_spend` and `append_request_log` through `state.write_batcher.enqueue(WriteJob::...)`. On `Err(Overflow)` the non-stream path returns `ChatError::StorageOverloaded` (503 + `x-marg-reason: storage_overloaded`); the stream path logs the overflow at warn. The `marg_write_batcher_overflow_total` counter increments per refusal. |
 | Strict-mode rate limit is opt-in only | yes | `quota::check` passes `state.rate_limits.strict_mode` into `hot.allow_request`. The default in `marg-core::config::RateLimitsConfig::default` is `strict_mode = false`, i.e. the documented token-bucket convention. Enabling it requires an explicit `[rate_limits].strict_mode = true` line in marg.toml. |
+| Permit tokens are signed | yes | `marg-server/src/kavach/runtime.rs::build_runtime` constructs `PqTokenSigner::from_keypair_hybrid` (or `_pq_only` when `[kavach].permit_signer_hybrid = false`) from the same `KavachKeyPair` loaded for the audit chain and attaches it via `Gate::with_token_signer`. Every `Verdict::Permit` carries an ML-DSA-65 (+ Ed25519) signature over `PermitToken::canonical_bytes()`. Verification recipe is in `docs/kavach.md`. Walkthrough scenario 11 covers a verify + byte-flip cycle. |
+| Drift invalidations drop the local cache | yes | `chat.rs` `Verdict::Invalidate` branch calls `state.kavach.session_store.invalidate(session_id)` (flips `invalidated = true` on the persisted session row), `state.key_cache.invalidate_all()` (drops the moka auth cache so the next request re-resolves against storage), and `kavach::emit_key_event(.., KeyEventKind::Invalidated, ..)` (appends `marg.key_event.v1` to the chain). Subsequent requests on the same key 401 because the cache miss path re-validates and Kavach refuses on the still-invalidated session row. |
+| Drift detector tuning is hot-reloadable, not restart-only | yes | `marg-server::policy::reload` calls `kavach::reload_policy`, which re-reads `[kavach.drift]` from `marg.toml` via `build_drift_evaluator` and stores the result into `runtime.drift_evaluator: Arc<SwappableDriftEvaluator>`. The gate's evaluator list is constructed once at boot with this wrapper attached; the wrapper's `evaluate` re-reads the inner `Option<Arc<DriftEvaluator>>` on every call, same `ArcSwap` pattern as `SwappableInvariantSet`. |
+| Cross-restart audit chain documented as parked | yes | ADR-016 records the v1.0 limitation: each Marg process boots a fresh `SignedAuditChain` because Kavach 0.1.2's API does not expose `resume_from(prev_head_hash, prev_index)`. Per-lifetime JSONL files are independently verifiable; a unified-history walk requires the operator to verify each file separately. `docs/kavach.md` "Cross-restart audit chain (parked: ADR-016)" surfaces the same information to operators. |

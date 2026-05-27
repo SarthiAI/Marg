@@ -11,6 +11,7 @@ use marg_core::{
 use marg_providers::ChatCompletionsClient;
 use marg_storage::{HotStore, Storage};
 
+use crate::kavach::KavachRuntime;
 use crate::metrics::Metrics;
 use crate::write_batcher::WriteBatcher;
 
@@ -30,6 +31,7 @@ pub struct AppState {
     pub metrics: Arc<Metrics>,
     pub write_batcher: Arc<WriteBatcher>,
     pub config_path: Arc<String>,
+    pub kavach: Arc<KavachRuntime>,
 }
 
 #[derive(Clone, Debug)]
@@ -56,6 +58,7 @@ impl AppState {
         metrics: Arc<Metrics>,
         write_batcher: Arc<WriteBatcher>,
         config_path: String,
+        kavach: Arc<KavachRuntime>,
     ) -> Self {
         let key_cache = Cache::builder()
             .max_capacity(50_000)
@@ -78,6 +81,7 @@ impl AppState {
             metrics,
             write_batcher,
             config_path: Arc::new(config_path),
+            kavach,
         }
     }
 }

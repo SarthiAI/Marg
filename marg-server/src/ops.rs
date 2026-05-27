@@ -37,5 +37,8 @@ pub fn version_info() -> Value {
     json!({
         "marg": env!("CARGO_PKG_VERSION"),
         "build_timestamp_unix": env!("MARG_BUILD_TIMESTAMP"),
+        "kavach_core": crate::KAVACH_CORE_VERSION,
+        "kavach_pq": crate::KAVACH_PQ_VERSION,
+        "kavach_redis": crate::KAVACH_REDIS_VERSION,
     })
 }

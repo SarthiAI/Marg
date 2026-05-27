@@ -24,9 +24,11 @@ pub struct BedrockClient {
     session_token: Option<SecretString>,
     default_max_tokens: u32,
     anthropic_version: String,
+    base_url: Option<String>,
 }
 
 impl BedrockClient {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         region: String,
         access_key_id: SecretString,
@@ -34,6 +36,7 @@ impl BedrockClient {
         session_token: Option<SecretString>,
         default_max_tokens: u32,
         anthropic_version: String,
+        base_url: Option<String>,
         timeout: Duration,
     ) -> Result<Self, ProviderError> {
         let http = Client::builder()
@@ -50,9 +53,13 @@ impl BedrockClient {
             session_token,
             default_max_tokens: default_max_tokens.max(1),
             anthropic_version,
+            base_url: base_url.map(|s| s.trim_end_matches('/').to_string()),
         })
     }
 
+    /// Host name used in the SigV4 canonical request. Always the canonical
+    /// AWS host so signatures verify against the real service even when the
+    /// HTTP request goes to a local fake (the stub does not verify SigV4).
     fn host(&self) -> String {
         format!("bedrock-runtime.{}.amazonaws.com", self.region)
     }
@@ -69,7 +76,10 @@ impl BedrockClient {
                 utf8_percent_encode(model_id, NON_ALPHANUMERIC)
             )
         };
-        let url = format!("https://{}{}", self.host(), path);
+        let url = match &self.base_url {
+            Some(base) => format!("{}{}", base, path),
+            None => format!("https://{}{}", self.host(), path),
+        };
         (url, path)
     }
 }

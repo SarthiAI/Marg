@@ -5,6 +5,8 @@ use axum::response::Response;
 use bytes::{Bytes, BytesMut};
 use chrono::Utc;
 use futures_util::StreamExt;
+use kavach_core::{PermitToken, Verdict};
+use serde_json::Value;
 use std::time::Instant;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::UnboundedReceiverStream;
@@ -14,6 +16,10 @@ use marg_providers::{ChatRequest, ChatUsage};
 
 use crate::auth;
 use crate::errors::ChatError;
+use crate::kavach::{
+    self, action_context_from_request, audit_request_lifecycle, encode_permit_header,
+    parse_caller_headers, verdict_kind_str, KavachMode, RequestLifecycle,
+};
 use crate::observability;
 use crate::proxy;
 use crate::quota;
@@ -44,6 +50,109 @@ pub async fn chat_completions(
 
     let req = ChatRequest::parse(&body).map_err(ChatError::Provider)?;
 
+    // Build the Kavach action context and call the gate. The gate's verdict
+    // drives observe vs enforce branching below. The original request body is
+    // kept for the audit snapshot (whether it lands in the chain depends on
+    // [kavach].include_prompts).
+    let pricing_for_estimate = state.pricing.load();
+    let estimated_cost_for_gate = pricing_for_estimate.cost_usd(
+        &req.model,
+        req.estimated_input_tokens,
+        req.max_output_tokens.unwrap_or(1024) as u64,
+    );
+    let caller_headers = parse_caller_headers(&headers);
+    let ctx = action_context_from_request(
+        &key,
+        &req,
+        estimated_cost_for_gate,
+        caller_headers,
+        &state.kavach.session_store,
+    )
+    .await;
+    let real_verdict = state.kavach.gate.evaluate(&ctx).await;
+    let mode = *state.kavach.mode.load_full();
+    let effective_verdict = apply_mode(&ctx, &real_verdict, mode);
+
+    let mut lifecycle = RequestLifecycle::new_from_request(&key, &req, estimated_cost_for_gate);
+    lifecycle.prompt_redacted_or_omitted = !*state.kavach.include_prompts.load_full();
+    let raw_request_value: Option<Value> = Some(req.raw.clone());
+
+    // Short-circuit refusals + invalidations in enforce mode. We still emit
+    // an audit entry so the operator can grep the chain for blocked attempts.
+    // In observe mode the gate's would-refuse becomes a logged event and the
+    // request continues to the upstream; `effective_verdict` is then Permit
+    // and neither of the arms below matches.
+    match &effective_verdict {
+        Verdict::Refuse(reason) => {
+            lifecycle.error_class = Some(format!("kavach_refuse:{}", reason.code));
+            lifecycle.error_message = Some(reason.reason.clone());
+            audit_request_lifecycle(
+                &state.kavach.audit_chain,
+                &ctx,
+                &real_verdict,
+                &effective_verdict,
+                &lifecycle,
+                mode.as_str(),
+                *state.kavach.include_prompts.load_full(),
+                raw_request_value.as_ref(),
+            );
+            return Err(ChatError::KavachRefuse {
+                code: reason.code.to_string(),
+                evaluator: reason.evaluator.clone(),
+                reason: reason.reason.clone(),
+            });
+        }
+        Verdict::Invalidate(scope) => {
+            // Drift (or any other evaluator that produces Invalidate) flipped
+            // the session. Three things follow before we return 403:
+            //   1. Flip the persisted session row to `invalidated = true` so
+            //      subsequent gate evaluations on this same Marg key refuse
+            //      even if drift never triggers again.
+            //   2. Drop the key from the local auth cache so the next request
+            //      goes back to the DB and revalidates status.
+            //   3. Append a `marg.key_event.v1` chain entry so the operator
+            //      can grep the audit chain for invalidations.
+            if let Err(e) = state
+                .kavach
+                .session_store
+                .invalidate(ctx.session.session_id)
+                .await
+            {
+                tracing::warn!(
+                    ?e,
+                    session_id = %ctx.session.session_id,
+                    "failed to mark kavach session as invalidated"
+                );
+            }
+            state.key_cache.invalidate_all();
+            kavach::emit_key_event(
+                &state.kavach.audit_chain,
+                "drift",
+                &key.id,
+                kavach::KeyEventKind::Invalidated,
+                Some(scope.reason.as_str()),
+            );
+
+            lifecycle.error_class = Some("kavach_invalidate".to_string());
+            lifecycle.error_message = Some(scope.reason.clone());
+            audit_request_lifecycle(
+                &state.kavach.audit_chain,
+                &ctx,
+                &real_verdict,
+                &effective_verdict,
+                &lifecycle,
+                mode.as_str(),
+                *state.kavach.include_prompts.load_full(),
+                raw_request_value.as_ref(),
+            );
+            return Err(ChatError::KavachInvalidate {
+                evaluator: scope.evaluator.clone(),
+                reason: scope.reason.clone(),
+            });
+        }
+        Verdict::Permit(_) => {}
+    }
+
     let pick_seed = uuid::Uuid::new_v4().as_u128() as u64;
     let routing_snapshot = state.routing.load();
     let resolution = routing_snapshot
@@ -63,14 +172,52 @@ pub async fn chat_completions(
         .decision_duration_seconds
         .observe(decision_started.elapsed().as_secs_f64());
 
+    let permit_token = match &effective_verdict {
+        Verdict::Permit(token) => Some(token.clone()),
+        _ => None,
+    };
+
     let started = Instant::now();
     if req.stream {
-        stream_response(state, key, budget, req, resolution, reservation, started).await
+        stream_response(
+            state,
+            key,
+            budget,
+            req,
+            resolution,
+            reservation,
+            started,
+            ctx,
+            real_verdict,
+            effective_verdict,
+            permit_token,
+            lifecycle,
+            mode,
+            raw_request_value,
+        )
+        .await
     } else {
-        non_stream_response(state, key, budget, req, resolution, reservation, started).await
+        non_stream_response(
+            state,
+            key,
+            budget,
+            req,
+            resolution,
+            reservation,
+            started,
+            ctx,
+            real_verdict,
+            effective_verdict,
+            permit_token,
+            lifecycle,
+            mode,
+            raw_request_value,
+        )
+        .await
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn non_stream_response(
     state: AppState,
     key: marg_core::MargKey,
@@ -79,6 +226,13 @@ async fn non_stream_response(
     resolution: marg_core::RouteResolution,
     reservation: quota::QuotaReservation,
     started: Instant,
+    ctx: kavach_core::ActionContext,
+    real_verdict: Verdict,
+    effective_verdict: Verdict,
+    permit_token: Option<PermitToken>,
+    mut lifecycle: RequestLifecycle,
+    mode: KavachMode,
+    raw_request_value: Option<Value>,
 ) -> Result<Response, ChatError> {
     let outcome = match proxy::call_with_failover_non_stream(
         &state,
@@ -92,6 +246,17 @@ async fn non_stream_response(
         Err(e) => {
             settle_reservation(&state, &key.id, &reservation, 0.0).await;
             record_error_metric(&state, &resolution.primary, &e, started.elapsed());
+            populate_lifecycle_error(&mut lifecycle, &e);
+            audit_request_lifecycle(
+                &state.kavach.audit_chain,
+                &ctx,
+                &real_verdict,
+                &effective_verdict,
+                &lifecycle,
+                mode.as_str(),
+                *state.kavach.include_prompts.load_full(),
+                raw_request_value.as_ref(),
+            );
             return Err(e);
         }
     };
@@ -141,14 +306,10 @@ async fn non_stream_response(
         status: provider_resp.status,
         stream: false,
         error: None,
+        team: key.team.clone(),
         attempts: attempts.clone(),
     };
 
-    // Hand the spend delta and request-log row to the async write batcher.
-    // The batcher folds many such jobs into one round-trip to durable storage,
-    // which keeps the synchronous request path off the database. On a full
-    // queue we fail closed with 503 storage_overloaded; the budget settlement
-    // and metrics have already been applied so the operator sees the load.
     if actual_cost > 0.0 {
         if state
             .write_batcher
@@ -170,18 +331,42 @@ async fn non_stream_response(
         return Err(ChatError::StorageOverloaded);
     }
 
+    populate_lifecycle_success(
+        &mut lifecycle,
+        &final_target,
+        &provider_resp.model,
+        provider_resp.status,
+        provider_resp.usage,
+        actual_cost,
+        latency_ms,
+        &attempts,
+        false,
+    );
+    audit_request_lifecycle(
+        &state.kavach.audit_chain,
+        &ctx,
+        &real_verdict,
+        &effective_verdict,
+        &lifecycle,
+        mode.as_str(),
+        *state.kavach.include_prompts.load_full(),
+        raw_request_value.as_ref(),
+    );
+
     let status = StatusCode::from_u16(provider_resp.status).unwrap_or(StatusCode::OK);
     let mut response = Response::builder()
         .status(status)
         .header("content-type", "application/json");
     if let Some(builder_headers) = response.headers_mut() {
         attach_route_headers(builder_headers, &final_target, &attempts);
+        attach_kavach_headers(builder_headers, mode, &real_verdict, &state, permit_token.as_ref());
     }
     response
         .body(Body::from(provider_resp.body))
         .map_err(|e| ChatError::Internal(format!("build response: {}", e)))
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn stream_response(
     state: AppState,
     key: marg_core::MargKey,
@@ -190,6 +375,13 @@ async fn stream_response(
     resolution: marg_core::RouteResolution,
     reservation: quota::QuotaReservation,
     started: Instant,
+    ctx: kavach_core::ActionContext,
+    real_verdict: Verdict,
+    effective_verdict: Verdict,
+    permit_token: Option<PermitToken>,
+    mut lifecycle: RequestLifecycle,
+    mode: KavachMode,
+    raw_request_value: Option<Value>,
 ) -> Result<Response, ChatError> {
     let outcome = match proxy::call_with_failover_stream(
         &state,
@@ -203,6 +395,17 @@ async fn stream_response(
         Err(e) => {
             settle_reservation(&state, &key.id, &reservation, 0.0).await;
             record_error_metric(&state, &resolution.primary, &e, started.elapsed());
+            populate_lifecycle_error(&mut lifecycle, &e);
+            audit_request_lifecycle(
+                &state.kavach.audit_chain,
+                &ctx,
+                &real_verdict,
+                &effective_verdict,
+                &lifecycle,
+                mode.as_str(),
+                *state.kavach.include_prompts.load_full(),
+                raw_request_value.as_ref(),
+            );
             return Err(e);
         }
     };
@@ -222,13 +425,21 @@ async fn stream_response(
     let pricing = state.pricing.clone();
     let metrics = state.metrics.clone();
     let write_batcher = state.write_batcher.clone();
+    let kavach_runtime = state.kavach.clone();
     let key_id = key.id.clone();
     let principal_id = key.principal.id.clone();
+    let team_for_log = key.team.clone();
     let attempts_for_log = attempts.clone();
     let reservation_day = reservation.day;
     let reservation_cost = reservation.estimated_cost_usd;
     let reservation_enforced = reservation.enforced;
     let budget_for_gauge = budget.clone();
+    let final_target_for_audit = final_target.clone();
+    let ctx_for_audit = ctx.clone();
+    let real_verdict_for_audit = real_verdict.clone();
+    let effective_verdict_for_audit = effective_verdict.clone();
+    let raw_request_value_for_audit = raw_request_value.clone();
+    let mode_str = mode.as_str();
 
     metrics.stream_started(&provider_name);
     let stream_provider = provider_name.clone();
@@ -245,12 +456,6 @@ async fn stream_response(
             match chunk {
                 Ok(bytes) => {
                     if tx.send(Ok(bytes.clone())).is_err() {
-                        // Client closed the body. Cancel the upstream call by
-                        // dropping `byte_stream` and breaking out of the loop;
-                        // reqwest aborts the underlying HTTP request on drop,
-                        // which stops the upstream provider from generating
-                        // further tokens and stops the cost amplification path
-                        // documented in SECURITY.md before P08.
                         client_disconnected = true;
                         metrics.record_provider_error(&stream_provider, "client_disconnect");
                         break;
@@ -283,7 +488,7 @@ async fn stream_response(
             .cost_usd(&stream_model, usage.prompt_tokens, usage.completion_tokens);
 
         let final_status = if client_disconnected {
-            499 // de-facto code for "client closed request"
+            499
         } else {
             provider_status
         };
@@ -317,8 +522,9 @@ async fn stream_response(
             latency_ms,
             status: final_status,
             stream: true,
-            error: logged_error,
-            attempts: attempts_for_log,
+            error: logged_error.clone(),
+            team: team_for_log.clone(),
+            attempts: attempts_for_log.clone(),
         };
 
         if reservation_enforced {
@@ -349,6 +555,37 @@ async fn stream_response(
                 Err(e) => tracing::warn!(?e, key_id = %key_id, "could not refresh budget gauge"),
             }
         }
+
+        let mut lifecycle = lifecycle.clone();
+        populate_lifecycle_success(
+            &mut lifecycle,
+            &final_target_for_audit,
+            &stream_model,
+            final_status,
+            usage,
+            cost,
+            latency_ms,
+            &attempts_for_log,
+            client_disconnected,
+        );
+        if let Some(err_msg) = logged_error {
+            lifecycle.error_class = Some(if client_disconnected {
+                "client_disconnect".to_string()
+            } else {
+                "upstream_stream_error".to_string()
+            });
+            lifecycle.error_message = Some(err_msg);
+        }
+        audit_request_lifecycle(
+            &kavach_runtime.audit_chain,
+            &ctx_for_audit,
+            &real_verdict_for_audit,
+            &effective_verdict_for_audit,
+            &lifecycle,
+            mode_str,
+            *kavach_runtime.include_prompts.load_full(),
+            raw_request_value_for_audit.as_ref(),
+        );
     });
 
     observability::record_outcome(provider_status, started.elapsed().as_millis().min(u64::MAX as u128) as u64);
@@ -362,10 +599,95 @@ async fn stream_response(
         .header("connection", "keep-alive");
     if let Some(builder_headers) = response.headers_mut() {
         attach_route_headers(builder_headers, &final_target, &attempts);
+        attach_kavach_headers(builder_headers, mode, &real_verdict, &state, permit_token.as_ref());
     }
     response
         .body(body)
         .map_err(|e| ChatError::Internal(format!("build streaming response: {}", e)))
+}
+
+/// In observe mode a real Refuse/Invalidate becomes an effective Permit so
+/// the request proceeds and the operator sees the would-refuse event in the
+/// audit chain. In enforce mode the real verdict is the effective verdict.
+fn apply_mode(
+    ctx: &kavach_core::ActionContext,
+    real_verdict: &Verdict,
+    mode: KavachMode,
+) -> Verdict {
+    match mode {
+        KavachMode::Enforce => real_verdict.clone(),
+        KavachMode::Observe => match real_verdict {
+            Verdict::Permit(_) => real_verdict.clone(),
+            Verdict::Refuse(_) | Verdict::Invalidate(_) => {
+                tracing::info!(
+                    evaluation_id = %ctx.evaluation_id,
+                    action = %ctx.action.name,
+                    verdict = %verdict_kind_str(real_verdict),
+                    "observe-only: would have blocked this action"
+                );
+                Verdict::Permit(PermitToken::new(ctx.evaluation_id, ctx.action.name.clone()))
+            }
+        },
+    }
+}
+
+fn populate_lifecycle_success(
+    lifecycle: &mut RequestLifecycle,
+    target: &marg_core::ResolvedTarget,
+    response_model: &str,
+    status: u16,
+    usage: ChatUsage,
+    actual_cost_usd: f64,
+    latency_ms: u64,
+    attempts: &[RouteAttempt],
+    client_disconnected: bool,
+) {
+    lifecycle.provider = Some(target.provider.clone());
+    lifecycle.route_model = Some(response_model.to_string());
+    lifecycle.provider_status = Some(status);
+    lifecycle.failovers = attempts
+        .iter()
+        .filter(|a| !matches!(a.outcome, marg_core::AttemptOutcome::Success))
+        .count() as u32;
+    lifecycle.attempts = attempts
+        .iter()
+        .map(|a| serde_json::to_value(a).unwrap_or(Value::Null))
+        .collect();
+    lifecycle.response_status = Some(status);
+    lifecycle.response_input_tokens = usage.prompt_tokens;
+    lifecycle.response_output_tokens = usage.completion_tokens;
+    lifecycle.response_actual_cost_usd = actual_cost_usd;
+    lifecycle.response_latency_ms = latency_ms;
+    lifecycle.response_client_disconnect = client_disconnected;
+}
+
+fn populate_lifecycle_error(lifecycle: &mut RequestLifecycle, err: &ChatError) {
+    lifecycle.error_class = Some(error_class_for(err).to_string());
+    lifecycle.error_message = Some(err.to_string());
+    let attempts = err.attempts();
+    lifecycle.failovers = attempts
+        .iter()
+        .filter(|a| !matches!(a.outcome, marg_core::AttemptOutcome::Success))
+        .count() as u32;
+    lifecycle.attempts = attempts
+        .iter()
+        .map(|a| serde_json::to_value(a).unwrap_or(Value::Null))
+        .collect();
+}
+
+fn error_class_for(err: &ChatError) -> &'static str {
+    match err {
+        ChatError::Upstream { .. } | ChatError::UpstreamStream { .. } => "upstream_status",
+        ChatError::Provider(_) | ChatError::ProviderWithAttempts { .. } => "provider_error",
+        ChatError::AllAttemptsFailed { .. } => "all_attempts_failed",
+        ChatError::Storage(_) | ChatError::StorageOverloaded => "storage",
+        ChatError::HotStore(_) => "hot_store",
+        ChatError::RateLimited { .. } => "rate_limited",
+        ChatError::BudgetExceeded { .. } => "budget_exceeded",
+        ChatError::KavachRefuse { .. } => "kavach_refuse",
+        ChatError::KavachInvalidate { .. } => "kavach_invalidate",
+        _ => "other",
+    }
 }
 
 async fn settle_reservation(
@@ -419,6 +741,7 @@ fn record_error_metric(
             }
         }
         ChatError::AllAttemptsFailed { .. } => 502,
+        ChatError::KavachRefuse { .. } | ChatError::KavachInvalidate { .. } => 403,
         _ => 500,
     };
     state.metrics.record_request(
@@ -441,7 +764,10 @@ fn attach_route_headers(
     if let Ok(v) = HeaderValue::from_str(&target.model) {
         headers.insert("x-marg-model", v);
     }
-    let failovers = attempts.iter().filter(|a| !matches!(a.outcome, marg_core::AttemptOutcome::Success)).count();
+    let failovers = attempts
+        .iter()
+        .filter(|a| !matches!(a.outcome, marg_core::AttemptOutcome::Success))
+        .count();
     if let Ok(v) = HeaderValue::from_str(&failovers.to_string()) {
         headers.insert("x-marg-failovers", v);
     }
@@ -449,3 +775,32 @@ fn attach_route_headers(
         headers.insert("x-marg-attempts", v);
     }
 }
+
+fn attach_kavach_headers(
+    headers: &mut HeaderMap,
+    mode: KavachMode,
+    real_verdict: &Verdict,
+    state: &AppState,
+    permit_token: Option<&PermitToken>,
+) {
+    if let Ok(v) = HeaderValue::from_str(mode.as_str()) {
+        headers.insert("x-kavach-mode", v);
+    }
+    if let Ok(v) = HeaderValue::from_str(verdict_kind_str(real_verdict)) {
+        headers.insert("x-kavach-verdict", v);
+    }
+    if let Ok(v) = HeaderValue::from_str(crate::KAVACH_CORE_VERSION) {
+        headers.insert("x-kavach-version", v);
+    }
+    if *state.kavach.expose_permit_to_caller.load_full() {
+        if let Some(token) = permit_token {
+            if let Some(encoded) = encode_permit_header(token) {
+                if let Ok(v) = HeaderValue::from_str(&encoded) {
+                    headers.insert("x-kavach-permit", v);
+                }
+            }
+        }
+    }
+    let _ = kavach::verdict_kind_str; // keep import alive
+}
+

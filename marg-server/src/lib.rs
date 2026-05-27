@@ -2,6 +2,7 @@ pub mod admin;
 mod auth;
 mod chat;
 mod errors;
+pub mod kavach;
 mod metered_storage;
 pub mod metrics;
 pub mod observability;
@@ -33,6 +34,13 @@ use tower_http::trace::TraceLayer;
 pub use metrics::Metrics;
 pub use ops::version_info;
 pub use state::{AppState, ProviderRegistry};
+
+/// Resolved Kavach versions baked in at build time by `build.rs`. The header
+/// `x-kavach-version` and the `/version` payload both use these constants so
+/// what the runtime reports always matches what Cargo actually linked.
+pub const KAVACH_CORE_VERSION: &str = env!("MARG_KAVACH_CORE_VERSION");
+pub const KAVACH_PQ_VERSION: &str = env!("MARG_KAVACH_PQ_VERSION");
+pub const KAVACH_REDIS_VERSION: &str = env!("MARG_KAVACH_REDIS_VERSION");
 
 pub async fn run(config_path: &str) -> anyhow::Result<()> {
     let cfg = Config::load(config_path)
@@ -66,6 +74,31 @@ pub async fn run(config_path: &str) -> anyhow::Result<()> {
         cfg.storage.write_batcher.clone(),
     );
 
+    // Build Kavach runtime from the policy file (or inline fallback).
+    // Empty policy in enforce mode is a fatal startup error per ADR-014;
+    // the build_runtime call enforces that contract.
+    let loaded_policy = marg_core::load_kavach_policy(
+        &cfg.kavach,
+        &cfg.inline_policies,
+        &cfg.inline_invariants,
+    )
+    .with_context(|| "loading kavach policy source")?;
+    let kavach_runtime = kavach::build_runtime(&cfg.kavach, &loaded_policy)
+        .with_context(|| "building kavach runtime")?;
+
+    // Periodic disk flush. One JSONL file per process lifetime; cross-restart
+    // chain merging is a v1.1 concern documented in docs/cluster-deployment.md.
+    let flush_handle = kavach::spawn_audit_flush_task(
+        kavach_runtime.audit_chain.clone(),
+        cfg.kavach.audit_export_path.clone(),
+        cfg.kavach.audit_flush_seconds,
+    );
+    tracing::info!(
+        path = %flush_handle.path.display(),
+        flush_seconds = cfg.kavach.audit_flush_seconds,
+        "kavach audit chain export file"
+    );
+
     let state = AppState::new(
         storage,
         hot,
@@ -77,7 +110,12 @@ pub async fn run(config_path: &str) -> anyhow::Result<()> {
         metrics,
         write_batcher,
         config_path.to_string(),
+        kavach_runtime.clone(),
     );
+
+    // SIGHUP triggers a policy reload (Kavach side + routing side, single
+    // transactional swap). Mirrors POST /admin/policy/reload.
+    install_sighup_reload(state.clone());
 
     admin::serve_admin(cfg.admin.clone(), state.clone())
         .await
@@ -254,6 +292,7 @@ fn build_providers(cfg: &Config) -> anyhow::Result<ProviderRegistry> {
             session_secret,
             bedrock.default_max_tokens,
             bedrock.anthropic_version.clone(),
+            bedrock.base_url.clone(),
             Duration::from_secs(bedrock.timeout_seconds),
         )
         .context("constructing BedrockClient")?;
@@ -317,6 +356,47 @@ fn check_fd_limit() {
             );
         }
         return;
+    }
+}
+
+/// Install a SIGHUP handler that re-reads `marg.toml` plus the Kavach policy
+/// file and atomically swaps both routing/pricing and Kavach policy. On
+/// failure the previous good state keeps serving and the failure is logged +
+/// recorded in the signed audit chain. Best-effort on non-unix platforms
+/// (Windows: no-op).
+fn install_sighup_reload(state: AppState) {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{signal, SignalKind};
+        tokio::spawn(async move {
+            let mut hup = match signal(SignalKind::hangup()) {
+                Ok(s) => s,
+                Err(err) => {
+                    tracing::error!(?err, "failed to install SIGHUP handler; policy reload will only run via /admin/policy/reload");
+                    return;
+                }
+            };
+            loop {
+                if hup.recv().await.is_none() {
+                    break;
+                }
+                tracing::info!("received SIGHUP, triggering policy reload");
+                match policy::reload(&state).await {
+                    Ok(outcome) => tracing::info!(
+                        marg_routes = outcome.config_routes + outcome.stored_routes,
+                        pricing_entries = outcome.pricing_entries,
+                        kavach_rules = outcome.kavach_rules,
+                        kavach_invariants = outcome.kavach_invariants,
+                        "policy reloaded on SIGHUP"
+                    ),
+                    Err(e) => tracing::warn!(?e, "policy reload on SIGHUP failed; previous policy still in effect"),
+                }
+            }
+        });
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = state;
     }
 }
 
