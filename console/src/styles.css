@@ -5,8 +5,8 @@
   --border: #2c333d;
   --text: #d8dee9;
   --muted: #8b949e;
-  --accent: #f0883e;
-  --accent-2: #ffa657;
+  --accent: #ff9933;
+  --accent-2: #ff5e3a;
   --ok: #56d364;
   --warn: #e3b341;
   --bad: #f85149;
@@ -23,8 +23,8 @@
   --border: #d0d7de;
   --text: #1f2328;
   --muted: #59636e;
-  --accent: #bc4b00;
-  --accent-2: #d2691e;
+  --accent: #ff9933;
+  --accent-2: #ff5e3a;
   --ok: #1a7f37;
   --warn: #9a6700;
   --bad: #cf222e;
@@ -86,7 +86,18 @@ label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 4px
   padding: 10px 20px; border-bottom: 1px solid var(--border);
   background: var(--panel);
 }
-.topbar .brand { font-weight: 700; letter-spacing: 0.5px; color: var(--accent); font-size: 16px; }
+.topbar .brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  color: var(--accent);
+  font-size: 16px;
+  line-height: 1;
+}
+.topbar .brand img { display: block; }
+.topbar .brand span { line-height: 1; }
 .topbar .title { font-size: 14px; color: var(--muted); }
 .topbar .actions { display: flex; gap: 8px; align-items: center; }
 .token-chip {
@@ -182,11 +193,34 @@ code, .mono {
 }
 
 .login-shell { display: flex; align-items: center; justify-content: center; min-height: 100vh; padding: 20px; }
-.login-card { background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius); padding: 28px; max-width: 420px; width: 100%; box-shadow: var(--shadow); }
-.login-card h1 { margin-top: 0; color: var(--accent); }
+.login-card { background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius); padding: 32px; max-width: 420px; width: 100%; box-shadow: var(--shadow); }
+.login-card h1 { margin: 4px 0 6px; color: var(--text); font-size: 22px; font-weight: 600; text-align: center; }
 .login-card .hint { font-size: 12px; color: var(--muted); margin-top: 12px; }
+.login-card > .hint:first-of-type { text-align: center; margin: 0 0 20px; }
 .login-card .hint ul { margin: 6px 0 0 18px; padding: 0; }
 .login-card .hint li { margin-bottom: 4px; }
+.login-logo {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 18px;
+}
+.login-logo img { display: block; border-radius: 50%; box-shadow: 0 2px 10px rgba(255, 153, 51, 0.25); }
+.login-wordmark {
+  font-size: 20px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  color: var(--accent);
+  margin-top: 6px;
+  line-height: 1;
+}
+.login-tag {
+  font-size: 11px;
+  color: var(--muted);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
 
 #toasts {
   position: fixed; right: 16px; bottom: 16px; z-index: 70;

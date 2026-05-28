@@ -3,7 +3,7 @@ import { h, mount } from "../dom";
 import { fmtIso, fmtUsd } from "../format";
 import { toast, toastError } from "../toast";
 import type { ConfigRoute, PersistedRoute, SplitEntry } from "../types";
-import { kv, th } from "../ui";
+import { kv, openKavachModeInfo, th } from "../ui";
 
 export async function renderPolicy(target: HTMLElement, signal: AbortSignal): Promise<void> {
   const headerInfo = h("div", { class: "card" });
@@ -83,7 +83,16 @@ export async function renderPolicy(target: HTMLElement, signal: AbortSignal): Pr
         ]),
         h("h3", { style: { marginTop: "12px", fontSize: "14px" } }, [
           "Kavach ",
-          h("span", { class: `badge ${k.mode === "enforce" ? "ok" : "code"}` }, k.mode),
+          h("span", {
+            class: `badge ${k.mode === "enforce" ? "ok" : "code"}`,
+            title: k.mode === "observe"
+              ? "Observe mode: every verdict is logged but nothing is blocked. Click for the recipe to go live."
+              : k.mode === "enforce"
+                ? "Enforce mode: default-deny is active. Click for details."
+                : "Click for mode details.",
+            style: { cursor: "pointer" },
+            events: { click: () => openKavachModeInfo(k.mode) },
+          }, k.mode),
         ]),
         kv([
           ["Policy path", k.policy_path ?? "(inline in marg.toml)"],

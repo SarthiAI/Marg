@@ -74,6 +74,27 @@ impl PricingTable {
         input_cost + output_cost
     }
 
+    /// Cost lookup that falls back when the upstream returns a
+    /// date-aliased or otherwise distinct model name from what the
+    /// caller actually sent. For example, OpenAI may resolve a request
+    /// for `gpt-4o-mini` to `gpt-4o-mini-2024-07-18` in the response;
+    /// the operator's `[[pricing]]` table is authored against the
+    /// stable name, so we look up the response model first and fall
+    /// back to the request model on miss.
+    pub fn cost_usd_with_fallback(
+        &self,
+        model: &str,
+        fallback_model: &str,
+        input_tokens: u64,
+        output_tokens: u64,
+    ) -> f64 {
+        if self.lookup(model).is_some() || model == fallback_model {
+            self.cost_usd(model, input_tokens, output_tokens)
+        } else {
+            self.cost_usd(fallback_model, input_tokens, output_tokens)
+        }
+    }
+
     pub fn known_models(&self) -> impl Iterator<Item = &String> {
         self.by_model.keys()
     }

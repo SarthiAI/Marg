@@ -1,12 +1,15 @@
 use anyhow::{anyhow, Context, Result};
 use chrono::Utc;
 use clap::{Parser, Subcommand};
+use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Arc;
 use tracing_subscriber::EnvFilter;
 
 use marg_core::{secret, BudgetSpec, Config, MargToken, NewAdminToken, NewKey, PrincipalKind};
 use marg_storage::{PostgresStorage, SqliteStorage, Storage};
+
+mod init;
 
 /// Which subcommand we are running. The server runs in JSON-log mode by
 /// default so logs flow straight into any modern log pipeline; CLI admin
@@ -58,6 +61,34 @@ enum Command {
     Policy {
         #[command(subcommand)]
         action: PolicyCommand,
+    },
+    /// One-shot install bootstrap. Writes a default marg.toml and policy.toml
+    /// into a chosen prefix, runs the SQLite migrations, mints the first
+    /// admin token, and prints a single post-install summary. Idempotent
+    /// (existing files are kept unless --force is set). Used by the one-line
+    /// installer and the container entrypoint; safe to run by hand.
+    Init {
+        /// Config prefix. Defaults to /etc/marg when run as root and
+        /// $HOME/.marg otherwise. Marg writes the config file, policy file,
+        /// SQLite DB, audit dir, signing keypair, and admin token into this
+        /// prefix.
+        #[arg(long)]
+        config_dir: Option<PathBuf>,
+        /// Overwrite an existing marg.toml / policy.toml in the prefix.
+        #[arg(long, default_value_t = false)]
+        force: bool,
+        /// Drop the bundled systemd unit into /etc/systemd/system/ and
+        /// enable it. Requires root and systemctl on PATH; linux only.
+        #[arg(long, default_value_t = false)]
+        systemd: bool,
+        /// No prompts. Picks defaults for every choice. Used by the
+        /// installer script and the container entrypoint.
+        #[arg(long, default_value_t = false)]
+        auto: bool,
+        /// Optional: also mint a Marg API key for this principal id, so
+        /// apps can be wired up without opening the console.
+        #[arg(long)]
+        seed_key: Option<String>,
     },
 }
 
@@ -194,7 +225,10 @@ async fn main() -> Result<()> {
     };
     install_tracing(mode);
     match cli.command {
-        Command::Start { config } => marg_server::run(&config).await,
+        Command::Start { config } => {
+            ensure_config_present(&config).await?;
+            marg_server::run(&config).await
+        }
         Command::Version { verbose } => {
             print_version(verbose);
             Ok(())
@@ -245,7 +279,55 @@ async fn main() -> Result<()> {
                 path,
             } => policy_audit(&config, since.as_deref(), limit, path.as_deref()).await,
         },
+        Command::Init {
+            config_dir,
+            force,
+            systemd,
+            auto,
+            seed_key,
+        } => {
+            let opts = init::InitOptions {
+                prefix: config_dir,
+                config_path: None,
+                force,
+                systemd,
+                auto,
+                seed_key,
+                quiet: false,
+            };
+            init::run(opts).await
+        }
     }
+}
+
+/// `marg start --config <path>` is the most common entry point and we want it
+/// to "just work" on a fresh box. When the config file is missing we run the
+/// same init flow the installer uses, scoped to the parent directory of the
+/// requested path, then continue with the regular boot. Idempotent in
+/// practice: a config-present second run skips the file writes and just
+/// validates that admin-token bootstrap is in place.
+async fn ensure_config_present(config_path: &str) -> Result<()> {
+    let path = std::path::Path::new(config_path);
+    if path.exists() {
+        return Ok(());
+    }
+    let prefix = path
+        .parent()
+        .map(|p| if p.as_os_str().is_empty() { PathBuf::from(".") } else { p.to_path_buf() });
+    tracing::info!(
+        path = %config_path,
+        "no config found at requested path; running marg init to bootstrap defaults"
+    );
+    let opts = init::InitOptions {
+        prefix,
+        config_path: Some(path.to_path_buf()),
+        force: false,
+        systemd: false,
+        auto: true,
+        seed_key: None,
+        quiet: false,
+    };
+    init::run(opts).await
 }
 
 fn install_tracing(mode: LogMode) {

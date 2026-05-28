@@ -270,8 +270,9 @@ async fn non_stream_response(
     observability::record_target(&final_target.provider, &provider_resp.model);
 
     let pricing = state.pricing.load();
-    let actual_cost = pricing.cost_usd(
+    let actual_cost = pricing.cost_usd_with_fallback(
         &provider_resp.model,
+        &final_target.model,
         provider_resp.usage.prompt_tokens,
         provider_resp.usage.completion_tokens,
     );

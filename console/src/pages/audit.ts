@@ -3,7 +3,7 @@ import { h, mount } from "../dom";
 import { fmtIso, shortId } from "../format";
 import { toast, toastError } from "../toast";
 import type { KavachAuditEntryView } from "../types";
-import { kv, th } from "../ui";
+import { kv, openKavachModeInfo, th } from "../ui";
 
 const PAGE_LIMIT = 100;
 
@@ -63,7 +63,16 @@ export async function renderAudit(target: HTMLElement, signal: AbortSignal): Pro
       statusInfo.replaceChildren(
         h("h3", { style: { marginTop: 0, fontSize: "14px" } }, [
           "Kavach status ",
-          h("span", { class: `badge ${isEnforce ? "code" : "ok"}` }, status.mode),
+          h("span", {
+            class: `badge ${isEnforce ? "code" : "ok"}`,
+            title: status.mode === "observe"
+              ? "Observe mode: every verdict is logged but nothing is blocked. Click for the recipe to go live."
+              : status.mode === "enforce"
+                ? "Enforce mode: default-deny is active. Click for details."
+                : "Click for mode details.",
+            style: { cursor: "pointer" },
+            events: { click: () => openKavachModeInfo(status.mode) },
+          }, status.mode),
         ]),
         kv([
           ["Chain length", String(status.audit_chain.length)],

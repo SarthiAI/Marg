@@ -64,8 +64,20 @@ export function showLogin(onSuccess: () => void): void {
     ]),
   ]);
 
+  const logoBlock = h("div", { class: "login-logo" }, [
+    h("img", {
+      src: "/console/logo.png",
+      alt: "Marg",
+      width: "64",
+      height: "64",
+    }),
+    h("div", { class: "login-wordmark" }, "Marg"),
+    h("div", { class: "login-tag" }, "self-hosted ai gateway"),
+  ]);
+
   const card = h("div", { class: "login-card" }, [
-    h("h1", {}, "Marg Console"),
+    logoBlock,
+    h("h1", {}, "Sign in"),
     h("p", { class: "hint" }, "Paste an admin Bearer token to continue."),
     form,
     hint,

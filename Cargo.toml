@@ -14,7 +14,7 @@ edition = "2021"
 license = "Elastic-2.0"
 rust-version = "1.75"
 authors = ["The Marg Contributors"]
-repository = "https://github.com/SarthiAI/marg"
+repository = "https://github.com/SarthiAI/Marg"
 
 [workspace.dependencies]
 tokio = { version = "1", features = ["full"] }

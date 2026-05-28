@@ -1,4 +1,5 @@
 use serde::Deserialize;
+use std::collections::HashMap;
 use std::path::Path;
 
 use crate::error::ConfigError;
@@ -140,6 +141,13 @@ pub struct ProvidersConfig {
     pub anthropic: Option<AnthropicProviderConfig>,
     pub google: Option<GoogleProviderConfig>,
     pub bedrock: Option<BedrockProviderConfig>,
+    /// Named OpenAI-compatible upstreams. Any number of entries, each
+    /// keyed by an operator-chosen name (e.g. "openrouter", "cerebras",
+    /// "groq"). Each entry uses the same shape as `[providers.openai]`
+    /// and is routed through the OpenAI adapter with a `base_url`
+    /// override. Route tables reference these by their key name.
+    #[serde(default)]
+    pub openai_compatible: HashMap<String, OpenAiProviderConfig>,
     #[serde(default)]
     pub default: Option<String>,
 }
@@ -393,6 +401,25 @@ impl Config {
                 }
             }
         }
+        for name in self.providers.openai_compatible.keys() {
+            if name.trim().is_empty() {
+                return Err(ConfigError::Validation(
+                    "providers.openai_compatible entries must have a non-empty name".into(),
+                ));
+            }
+            if matches!(name.as_str(), "openai" | "anthropic" | "google" | "bedrock") {
+                return Err(ConfigError::Validation(format!(
+                    "providers.openai_compatible.{} collides with a reserved provider name; pick a different name",
+                    name
+                )));
+            }
+            if !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-') {
+                return Err(ConfigError::Validation(format!(
+                    "providers.openai_compatible.{} contains an invalid character; use ascii alphanumeric, '_', or '-'",
+                    name
+                )));
+            }
+        }
         Ok(())
     }
 
@@ -402,6 +429,11 @@ impl Config {
         if self.providers.anthropic.is_some() { out.push("anthropic".to_string()); }
         if self.providers.google.is_some() { out.push("google".to_string()); }
         if self.providers.bedrock.is_some() { out.push("bedrock".to_string()); }
+        let mut compat: Vec<&String> = self.providers.openai_compatible.keys().collect();
+        compat.sort();
+        for name in compat {
+            out.push(name.clone());
+        }
         out
     }
 }

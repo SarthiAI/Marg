@@ -40,49 +40,57 @@ path = "./marg.db"
 # max_batch_size = 256
 # max_batch_age_ms = 50
 
-# Default sample uses OpenAI. For local benchmarking, set base_url to the
-# provider stub: base_url = "http://127.0.0.1:18081".
+# Marg is OpenAI-compatible. Every provider block uses the same shape:
+# api_key + base_url + optional timeout_seconds. Apps point their
+# OpenAI SDK at Marg and Marg forwards each request to the matching
+# upstream below. See docs/providers.md for the full list of known
+# OpenAI-compatible endpoints, and routing-policy.md for how the
+# route table picks which provider handles which model name.
 #
 # All api_key fields accept secret references:
 #   plain:<value>  (default if no scheme prefix)
 #   env:<NAME>     read from environment variable
 #   file:<path>    read trimmed file contents (HashiCorp Vault / SSM workflow)
+#
+# For local benchmarking against the provider stub, set
+#   base_url = "http://127.0.0.1:18081"
+# on any provider below.
+
 [providers.openai]
-api_key = "REPLACE_WITH_REAL_OR_STUB_KEY"
+api_key = "env:OPENAI_API_KEY"
 base_url = "https://api.openai.com"
 timeout_seconds = 120
+
+# Named OpenAI-compatible upstreams. Add any number of entries here;
+# each is keyed by an operator-chosen name and is routed through the
+# OpenAI adapter with a `base_url` override. Route tables reference
+# these by their key name (e.g. primary = "openrouter").
+#
+# Reserved names you cannot use here: openai, anthropic, google, bedrock.
+#
+# OpenRouter routes to many upstreams behind one API. Model names are
+# provider-prefixed, e.g. "openai/gpt-4o".
+# [providers.openai_compatible.openrouter]
+# api_key = "env:OPENROUTER_API_KEY"
+# base_url = "https://openrouter.ai/api/v1"
+# timeout_seconds = 120
+
+# Cerebras runs open-weights models on LPU hardware. Available models
+# depend on your Cerebras account tier (call GET https://api.cerebras.ai/v1/models
+# with your key to list them). Often the cheapest per token of the three.
+# [providers.openai_compatible.cerebras]
+# api_key = "env:CEREBRAS_API_KEY"
+# base_url = "https://api.cerebras.ai/v1"
+# timeout_seconds = 120
+
+# Any other OpenAI-compatible endpoint (Groq, Together AI, Fireworks AI,
+# vLLM, LM Studio, Ollama, ...) uses the same shape with a different
+# base_url. See docs/providers.md for known endpoints.
 
 # Optional: pick a default provider when no route matches. If omitted,
 # Marg uses the first configured provider in this file.
 # [providers]
 # default = "openai"
-
-# Anthropic (Claude). Enable by uncommenting and dropping in your key.
-# [providers.anthropic]
-# api_key = "REPLACE_WITH_ANTHROPIC_KEY"
-# base_url = "https://api.anthropic.com"
-# api_version = "2023-06-01"
-# default_max_tokens = 1024
-# timeout_seconds = 120
-
-# Google Gemini.
-# [providers.google]
-# api_key = "REPLACE_WITH_GOOGLE_KEY"
-# base_url = "https://generativelanguage.googleapis.com"
-# api_version = "v1beta"
-# timeout_seconds = 120
-
-# AWS Bedrock. Credentials read from config or AWS_ACCESS_KEY_ID /
-# AWS_SECRET_ACCESS_KEY env vars. session_token optional for temporary
-# credentials.
-# [providers.bedrock]
-# region = "us-east-1"
-# access_key_id = ""
-# secret_access_key = ""
-# session_token = ""
-# default_max_tokens = 1024
-# anthropic_version = "bedrock-2023-05-31"
-# timeout_seconds = 120
 
 [security]
 # Marg never logs prompt or response bodies by default. Flip these only for
@@ -133,13 +141,35 @@ default_rpm = 0
 # every request spaced evenly.
 strict_mode = false
 
-# Pricing table overrides. Marg ships defaults for common OpenAI, Anthropic,
-# Google, and Bedrock models. Override per model here. Costs are USD per
-# 1K tokens.
-# [[pricing]]
-# model = "gpt-4o"
-# input_per_1k_usd = 0.0025
-# output_per_1k_usd = 0.01
+# Pricing table. Each entry says "this model name costs N USD per 1K
+# tokens of input and M USD per 1K tokens of output". The cost-tracker
+# multiplies usage by these rates to fill request_log.cost_usd and to
+# drive budget enforcement. Update when upstream prices change; Marg
+# does not auto-fetch prices from any provider.
+#
+# The entries below cover the three validated OpenAI-compatible
+# backends as of v0.1.0. Add more entries for any other model name
+# you route through Marg.
+
+[[pricing]]
+model = "gpt-4o-mini"
+input_per_1k_usd = 0.00015
+output_per_1k_usd = 0.00060
+
+[[pricing]]
+model = "gpt-4o"
+input_per_1k_usd = 0.00250
+output_per_1k_usd = 0.01000
+
+[[pricing]]
+model = "openai/gpt-4o-mini"
+input_per_1k_usd = 0.00016
+output_per_1k_usd = 0.00063
+
+[[pricing]]
+model = "llama3.1-8b"
+input_per_1k_usd = 0.00010
+output_per_1k_usd = 0.00010
 
 # Routing rules. Each [[routes]] block is evaluated top-to-bottom. The first
 # block whose `match` conditions are satisfied wins. Within a block:
@@ -154,19 +184,23 @@ strict_mode = false
 # [providers].default).
 #
 # [[routes]]
-# match.model = "gpt-4*"
-# primary = "openai"
-# fallback = ["anthropic:claude-3-5-sonnet"]
+# match.model = "openai/*"
+# primary = "openrouter"
 #
 # [[routes]]
-# match.model = "claude-*"
-# primary = "anthropic"
+# match.model = "llama3.1-*"
+# primary = "cerebras"
+#
+# [[routes]]
+# match.model = "gpt-*"
+# primary = "openai"
+# fallback = ["openrouter:openai/gpt-4o-mini"]
 #
 # [[routes]]
 # match.team = "experimental"
 # split = [
 #   { provider = "openai", weight = 50 },
-#   { provider = "anthropic", weight = 50, model = "claude-3-5-sonnet" },
+#   { provider = "openrouter", weight = 50, model = "openai/gpt-4o-mini" },
 # ]
 
 # ============================================================================

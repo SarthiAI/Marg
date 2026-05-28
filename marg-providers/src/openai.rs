@@ -30,7 +30,17 @@ impl OpenAIClient {
     }
 
     fn endpoint(&self) -> String {
-        format!("{}/v1/chat/completions", self.base_url)
+        // Accept both base_url shapes operators paste in:
+        //   "https://api.openai.com"            -> add "/v1/chat/completions"
+        //   "https://openrouter.ai/api/v1"      -> add "/chat/completions"
+        // The OpenAI SDK convention is to set base_url to ".../v1", so most
+        // upstream docs (OpenRouter, Cerebras, Groq, vLLM, ...) lead with
+        // that form. Marg accepts either to match operator muscle memory.
+        if self.base_url.ends_with("/v1") {
+            format!("{}/chat/completions", self.base_url)
+        } else {
+            format!("{}/v1/chat/completions", self.base_url)
+        }
     }
 }
 

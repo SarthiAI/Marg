@@ -1,5 +1,6 @@
 import { clearToken, getKavachStatus, getOpenApi, getToken } from "./api";
 import { h } from "./dom";
+import { openKavachModeInfo } from "./ui";
 import { currentPath, mountRouter, navigate, registerRoute } from "./router";
 import { showLogin } from "./pages/login";
 import { renderDashboard } from "./pages/dashboard";
@@ -11,6 +12,7 @@ import { renderProviders } from "./pages/providers";
 import { renderRequests } from "./pages/requests";
 import { renderAdminTokens } from "./pages/admin_tokens";
 import { renderAudit } from "./pages/audit";
+import { renderApiDocs } from "./pages/api_docs";
 
 interface NavLink { path: string; label: string; }
 const links: NavLink[] = [
@@ -23,6 +25,7 @@ const links: NavLink[] = [
   { path: "/requests", label: "Requests" },
   { path: "/audit", label: "Audit" },
   { path: "/admin-tokens", label: "Admin tokens" },
+  { path: "/api", label: "API" },
 ];
 
 let version = "";
@@ -34,8 +37,15 @@ function buildShell(): { outlet: HTMLElement; titleEl: HTMLElement; kavachBadge:
     "span",
     {
       class: "badge code",
-      title: "Kavach mode (observe = log only, enforce = default-deny)",
-      style: { fontSize: "11px", marginRight: "8px" },
+      title: "Click for what this mode means and how to switch",
+      style: { fontSize: "11px", marginRight: "8px", cursor: "pointer" },
+      dataset: { mode: "" },
+      events: {
+        click: () => {
+          const mode = (kavachBadge.dataset.mode || "").toString();
+          openKavachModeInfo(mode);
+        },
+      },
     },
     "kavach: ?",
   );
@@ -55,7 +65,15 @@ function buildShell(): { outlet: HTMLElement; titleEl: HTMLElement; kavachBadge:
     "Theme",
   );
   const topbar = h("div", { class: "topbar" }, [
-    h("div", { class: "brand" }, "Marg"),
+    h("div", { class: "brand" }, [
+      h("img", {
+        src: "/console/logo.png",
+        alt: "Marg",
+        width: "24",
+        height: "24",
+      }),
+      h("span", {}, "Marg"),
+    ]),
     titleEl,
     h("div", { class: "actions" }, [kavachBadge, themeBtn, tokenChipEl]),
   ]);
@@ -182,6 +200,10 @@ export function mountApp(): void {
     titleEl.textContent = "Admin tokens";
     return renderAdminTokens(target, signal);
   });
+  registerRoute("/api", (target, _params, signal) => {
+    titleEl.textContent = "API";
+    return renderApiDocs(target, signal);
+  });
 
   mountRouter(outlet, (path) => {
     highlightNav(path);
@@ -209,7 +231,13 @@ async function refreshKavachBadge(badge: HTMLElement): Promise<void> {
     badge.textContent = `kavach: ${mode}`;
     badge.classList.remove("ok", "code", "err");
     badge.classList.add(mode === "enforce" ? "ok" : "code");
-    badge.title = `Kavach ${status.kavach_core_version} (${mode}), chain length ${status.audit_chain.length}`;
+    badge.dataset.mode = mode;
+    badge.title =
+      mode === "observe"
+        ? "Kavach is in observe mode (logging only, nothing is blocked). Click for the recipe to go live."
+        : mode === "enforce"
+          ? `Kavach is live (default-deny). Chain length ${status.audit_chain.length}. Click for details.`
+          : `Kavach ${status.kavach_core_version} (${mode}), chain length ${status.audit_chain.length}`;
   } catch (_e) {
     badge.textContent = "kavach: ?";
   }

@@ -299,9 +299,38 @@ fn build_providers(cfg: &Config) -> anyhow::Result<ProviderRegistry> {
         registry.insert("bedrock".to_string(), Arc::new(client) as Arc<dyn ChatCompletionsClient>);
     }
 
+    let mut compat: Vec<(&String, &marg_core::config::OpenAiProviderConfig)> =
+        cfg.providers.openai_compatible.iter().collect();
+    compat.sort_by(|a, b| a.0.cmp(b.0));
+    for (name, entry) in compat {
+        let api_key = secret::resolve(&entry.api_key).with_context(|| {
+            format!(
+                "resolving providers.openai_compatible.{}.api_key secret reference",
+                name
+            )
+        })?;
+        let client = OpenAIClient::new(
+            entry.base_url.clone(),
+            SecretString::new(api_key.into_boxed_str()),
+            Duration::from_secs(entry.timeout_seconds),
+        )
+        .with_context(|| {
+            format!(
+                "constructing OpenAI-compatible client for providers.openai_compatible.{}",
+                name
+            )
+        })?;
+        registry.insert(name.clone(), Arc::new(client) as Arc<dyn ChatCompletionsClient>);
+    }
+
     if registry.is_empty() {
-        anyhow::bail!(
-            "no providers configured: add at least one of [providers.openai], [providers.anthropic], [providers.google], [providers.bedrock] to marg.toml"
+        // Boot anyway so the admin console comes up. The first chat request
+        // gets a clean error from the routing layer; the operator's job is
+        // to log into the console and configure a provider. This is the
+        // single-command-install story from P13: `curl | sh` lands a
+        // working gateway, the operator wires up the upstream after.
+        tracing::warn!(
+            "no providers configured: chat endpoints will refuse until at least one of [providers.openai], [providers.anthropic], [providers.google], [providers.bedrock], or [providers.openai_compatible.<name>] is set in marg.toml. The admin console is still available."
         );
     }
     Ok(registry)

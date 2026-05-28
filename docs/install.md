@@ -1,7 +1,88 @@
 # Install
 
-Marg ships as a single static binary. Pick the variant that matches
-your machine and you are running in under a minute.
+Marg ships as a single static binary. Pick the install recipe that
+matches your environment and you are running in under a minute.
+
+## One-line installer (recommended for bare-metal and VMs)
+
+```bash
+curl -fsSL https://github.com/SarthiAI/Marg/releases/latest/download/install.sh | sh
+```
+
+The installer detects the host operating system and CPU architecture,
+fetches the matching release archive from GitHub, verifies the SHA-256
+against the published `SHA256SUMS`, drops the `marg` binary into
+`/usr/local/bin`, and then runs `marg init --auto`. On Linux as root with
+systemctl present it also installs the bundled systemd unit and enables
+it. The script prints a single post-install summary that lists the
+config file path, the admin console URL, and the bootstrap admin token.
+
+Environment overrides (e.g. `MARG_VERSION=v0.1.0`, `MARG_PREFIX=$HOME/.local/bin`,
+`MARG_NO_SYSTEMD=1`) are documented in `installer/README.md`. The
+installer is POSIX-clean, under 200 lines, and safe to pipe; readers who
+want to audit first can save it with `-o install.sh` and run `sh install.sh`
+manually.
+
+Targets the installer currently knows about:
+
+| OS | Architecture | Archive label |
+|---|---|---|
+| Linux | x86_64 | `linux-x64` |
+| Linux | aarch64 | `linux-arm64` |
+| macOS | Apple Silicon | `macos-arm64` |
+
+Other targets need the from-source path below.
+
+## Docker (one-liner)
+
+```bash
+docker run -d --name marg -p 8080:8080 -p 8081:8081 \
+  -v marg-data:/etc/marg \
+  sarthiai/marg:latest
+```
+
+The container is `FROM scratch` plus the static binary. Image size is
+around 16 MB. On first start `marg start` notices the missing
+`/etc/marg/marg.toml`, runs `marg init --auto` to write defaults and mint
+the admin token, then continues into the proxy and admin servers.
+
+Persist state by mounting a named volume at `/etc/marg`. That keeps the
+SQLite database, the signed audit chain, the Kavach signing keypair, and
+the admin token across container restarts.
+
+Env-var overrides for provider keys work as expected:
+
+```bash
+docker run -d --name marg -p 8080:8080 -p 8081:8081 \
+  -v marg-data:/etc/marg \
+  -e OPENAI_API_KEY=sk-... \
+  sarthiai/marg:latest
+```
+
+Multi-arch images (`linux/amd64` and `linux/arm64`) are published to
+Docker Hub at `sarthiai/marg` on every release.
+
+## `marg init` (manual install)
+
+If a release archive is already on disk (air-gapped, vendored, or built
+from source), bootstrap the install yourself:
+
+```bash
+sudo install -m 0755 marg /usr/local/bin/marg
+sudo marg init --systemd       # /etc/marg config, systemd unit, admin token
+```
+
+The init subcommand picks `/etc/marg/` for config when run as root and
+`$HOME/.marg/` otherwise. Re-running is idempotent (existing files are
+kept unless `--force` is set). Useful flags:
+
+| Flag | Purpose |
+|---|---|
+| `--config-dir <dir>` | Use a non-default prefix. |
+| `--force` | Overwrite an existing `marg.toml` / `policy.toml`. |
+| `--systemd` | Install and enable the bundled systemd unit. |
+| `--auto` | No prompts. Picks defaults. |
+| `--seed-key <principal>` | Also mint a Marg API key for that principal id. |
 
 ## Released binaries
 
@@ -45,16 +126,11 @@ self-contained: no system OpenSSL, no Node.js (the console bundle is
 pre-built and embedded), no runtime services. Rust toolchain version
 is pinned in `rust-toolchain.toml`.
 
-## Container image
+## Container image (advanced)
 
-```bash
-docker run --rm -p 8080:8080 -p 8081:8081 \
-    -v $(pwd)/marg.toml:/etc/marg/marg.toml \
-    ghcr.io/chirotpal/marg:<version>
-```
-
-The container is `FROM scratch` plus the static binary plus the
-console bundle. Image size sits around 16 MB without Kavach.
+See the "Docker (one-liner)" section above for the recommended path.
+Behind the scenes the image is `FROM scratch` plus the static binary
+plus the embedded console bundle. Image size sits around 16 MB.
 
 ## Production prerequisites
 
@@ -162,6 +238,70 @@ curl -s http://127.0.0.1:8081/                # admin console (login page)
 The bootstrap admin token is written to `./marg-admin.token` (mode
 0600) the first time `marg start` runs. Use it to log into the
 console at `http://127.0.0.1:8081/`.
+
+## Upgrade
+
+The one-line installer is the canonical upgrade path. Re-run it; the
+script picks the latest release, refuses to clobber a same-version
+binary unless `MARG_FORCE=1` is set, and leaves your existing
+`marg.toml` / `policy.toml` untouched (`marg init` is idempotent).
+
+```bash
+curl -fsSL https://github.com/SarthiAI/Marg/releases/latest/download/install.sh | MARG_FORCE=1 sh
+sudo systemctl restart marg     # if running under systemd
+```
+
+For container deployments, pull the new tag and recreate the container
+with the same `-v marg-data:/etc/marg` mount:
+
+```bash
+docker pull sarthiai/marg:latest
+docker stop marg && docker rm marg
+docker run -d --name marg -p 8080:8080 -p 8081:8081 \
+  -v marg-data:/etc/marg sarthiai/marg:latest
+```
+
+The on-disk format (config files, SQLite schema, signed audit chain) is
+forwards-compatible within a major version: a `v0.X.Y` install can be
+upgraded to any later `v0.X.Z` without manual migration. Schema
+migrations run automatically on the first boot of the new version.
+
+## Uninstall
+
+systemd install:
+
+```bash
+sudo systemctl disable --now marg
+sudo rm /etc/systemd/system/marg.service
+sudo systemctl daemon-reload
+sudo rm /usr/local/bin/marg
+sudo rm -rf /etc/marg          # also wipes SQLite, audit, signing keypair
+```
+
+Non-systemd install (per-user):
+
+```bash
+rm "$HOME/.local/bin/marg"     # or wherever MARG_PREFIX put it
+rm -rf "$HOME/.marg"
+```
+
+Container:
+
+```bash
+docker stop marg && docker rm marg
+docker volume rm marg-data     # only if you also want state gone
+```
+
+## Custom configuration
+
+Pass `--config-dir <dir>` to `marg init` for a non-default prefix, or
+hand-edit the generated `marg.toml`. Every option, every default, and
+every provider block is documented in `config-reference.md`.
+
+The minimal first-boot config from `marg init` has no provider keys
+configured. Add at least one (`[providers.openai]`, `[providers.anthropic]`,
+`[providers.google]`, `[providers.bedrock]`) before pointing application
+traffic at the gateway.
 
 ## Where to next
 
