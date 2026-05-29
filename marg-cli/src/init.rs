@@ -391,7 +391,10 @@ fn write_secret_file(path: &Path, contents: &str) -> std::io::Result<()> {
 
 /// Drop the bundled systemd unit into /etc/systemd/system/ and run
 /// daemon-reload + enable. Only attempted on Linux as root with
-/// systemctl present. Idempotent: re-running is safe.
+/// systemctl present. Idempotent: re-running is safe. Also creates the
+/// `marg` system user / group the unit runs under (if missing) and
+/// chowns the data directory to it so the service can actually read
+/// and write its state.
 fn install_systemd_unit(config_path: &Path, data_dir: &Path) -> Result<bool> {
     if !cfg!(target_os = "linux") {
         tracing::warn!("--systemd is only supported on linux, skipping");
@@ -405,6 +408,8 @@ fn install_systemd_unit(config_path: &Path, data_dir: &Path) -> Result<bool> {
     if !which("systemctl") {
         return Err(anyhow!("--systemd was passed but systemctl is not on PATH"));
     }
+
+    ensure_marg_system_user()?;
 
     let data = path_display(data_dir);
     let unit = include_str!("../../dist/systemd/marg.service")
@@ -425,7 +430,69 @@ fn install_systemd_unit(config_path: &Path, data_dir: &Path) -> Result<bool> {
     };
     run(&["daemon-reload"])?;
     run(&["enable", "marg.service"])?;
+
+    chown_marg(data_dir)?;
+
     Ok(true)
+}
+
+/// Create the `marg` system user and matching group the unit runs
+/// under, if they are not already present. Idempotent.
+fn ensure_marg_system_user() -> Result<()> {
+    let already_present = std::process::Command::new("id")
+        .args(["-u", "marg"])
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+    if already_present {
+        return Ok(());
+    }
+    if !which("useradd") {
+        return Err(anyhow!(
+            "marg system user does not exist and useradd is not on PATH; \
+             create the marg user manually and re-run marg init --systemd"
+        ));
+    }
+    let status = std::process::Command::new("useradd")
+        .args([
+            "--system",
+            "--no-create-home",
+            "--shell",
+            "/usr/sbin/nologin",
+            "--user-group",
+            "marg",
+        ])
+        .status()
+        .context("running useradd to create the marg system user")?;
+    if !status.success() {
+        return Err(anyhow!(
+            "useradd to create the marg system user exited with {}",
+            status
+        ));
+    }
+    Ok(())
+}
+
+/// Chown the data directory recursively to `marg:marg` so the
+/// systemd-managed marg process can read its config and write its
+/// SQLite database, signed audit chain, and admin token file.
+fn chown_marg(dir: &Path) -> Result<()> {
+    if !which("chown") {
+        return Ok(());
+    }
+    let status = std::process::Command::new("chown")
+        .args(["-R", "marg:marg"])
+        .arg(dir)
+        .status()
+        .context("running chown -R marg:marg on the data directory")?;
+    if !status.success() {
+        return Err(anyhow!(
+            "chown -R marg:marg {} exited with {}",
+            dir.display(),
+            status
+        ));
+    }
+    Ok(())
 }
 
 fn which(bin: &str) -> bool {

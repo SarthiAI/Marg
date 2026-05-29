@@ -4,7 +4,24 @@ All notable changes to Marg are documented in this file. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), versioning
 follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.1.0] - unreleased
+## [0.1.1] - unreleased
+
+Hotfix release. The 0.1.0 installer dropped the bundled systemd unit
+into place but did not create the `marg` system user and group the
+unit runs under, so `systemctl start marg` failed with exit code
+217/USER on a fresh Linux box. 0.1.1 fixes the installer.
+
+### Fixed
+
+- `marg init --systemd` now creates the `marg` system user and matching
+  group via `useradd --system --no-create-home --shell /usr/sbin/nologin
+  --user-group marg` when they are not already present, and chowns the
+  data directory recursively to `marg:marg` so the service can read its
+  config and write its SQLite database, signed audit chain, and admin
+  token file. The one-line installer (`curl ... install.sh | sudo sh`)
+  picks this up automatically. Re-running is idempotent.
+
+## [0.1.0] - 2026-05-29
 
 The first published release of Marg. OpenAI-compatible proxy with
 provider failover, budgets, rate limits, pluggable storage,
