@@ -9,17 +9,20 @@ starting point.
 Symptom: `x-marg-reason: unauthorized`.
 
 Cause: the `Authorization: Bearer <token>` header is missing or the
-token has been revoked. Auth cache TTL is 60 seconds, so a freshly
-revoked token may still authenticate for up to a minute. The console
-explicitly invalidates the cache on revoke; if you revoked via the
-HTTP API and want immediate effect, follow up with `POST
-/admin/auth/cache/invalidate`.
+token has been revoked. The API-key auth cache TTL is 60 seconds, so a
+freshly revoked application key may still authenticate for up to a
+minute. (Admin-token caching is shorter, 5 seconds.) The console
+explicitly invalidates the cache on revoke; if you revoked an
+application key via the HTTP API and want immediate effect, follow up
+with `POST /admin/keys/<id>/invalidate`.
 
 ## Marg returns 429
 
 `x-marg-reason: budget_exceeded` means the key hit its USD cap.
-Check `GET /admin/budgets/<key_id>`. To raise the cap live, `PATCH
-/admin/budgets/<key_id>` with the new cap.
+Check `GET /admin/budgets/<key_id>`. To raise the cap live, `POST
+/admin/budgets` with `{"key_id": "<id>", "daily_usd": <new cap>, "rpm": <rpm>}`.
+The endpoint is an upsert, so the same call sets a cap for the first
+time or replaces an existing one.
 
 `x-marg-reason: rate_limited` means the key hit its rpm limit. The
 window is per-minute, sliding. Either raise `rpm` on the key or wait.
@@ -32,9 +35,15 @@ Redis health and the security group / iptables rules between Marg
 and Redis. C03 (redis-partition) is the chaos scenario that
 exercises this path.
 
-`x-marg-reason: storage_unreachable` means the durable backend is
-down (Postgres or SQLite file inaccessible). Same triage: check the
-backend.
+`x-marg-reason: internal_error` on a 503 means the durable backend is
+down (Postgres or SQLite file inaccessible) or another internal
+component returned an error before the request reached an upstream.
+Triage: check the backend, then the Marg logs around the request id.
+
+`x-marg-reason: storage_overloaded` means the write-batcher queue
+filled before the request could be admitted. Either the durable
+backend is slow or the write rate is above what it can sustain.
+Raise the batcher size, scale the backend, or shed load.
 
 503 with no `x-marg-reason` and a body of `disk full` means the
 local disk that backs the request log filled. Free space; the node
@@ -100,11 +109,11 @@ cargo build --release
 Marg opens its connection pool lazily, so the first request after
 startup pays the connect cost. If the cluster is large (cluster-10
 or beyond), every Marg instance racing for connections at boot can
-saturate Postgres briefly. The fix is to:
-- Set the `MARG_PG_POOL_WARMUP=true` env var (Marg pre-opens half
-  the pool at startup, in 100 ms-spaced batches).
-- Or run a `health_check` script on each node that hits Marg with a
-  cheap admin call before the LB adds the node to rotation.
+saturate Postgres briefly. The mitigation is to run a `health_check`
+script on each node that hits Marg with a cheap admin call before the
+load balancer adds the node to rotation, so the connect cost is paid
+out of the LB path. Tune `storage.min_connections` upward if you want
+a larger pool floor held open from boot.
 
 ## Permission denied writing the admin bootstrap token
 
@@ -122,9 +131,13 @@ the right ownership, or set `bootstrap_token_path = ""` and call
 Tail latency under load almost always points at one of:
 - Postgres slow query (look at
   `marg_storage_query_duration_seconds_bucket{backend="postgres"}` p99).
-- A single noisy key starving the rest. Check
-  `marg_requests_total{key_id}` rate per key.
-- Provider tail latency. `marg_request_duration_seconds_bucket{provider}`
+- A single noisy key starving the rest. Marg's per-request counters
+  are not keyed by `key_id` for cardinality reasons, but
+  `marg_budget_remaining_usd{key_id}` plus the request log
+  (`GET /admin/requests?key_id=<id>`) give the same picture: alert on
+  budgets draining unusually fast, then pull the per-key timeline from
+  the request log.
+- Provider tail latency. `marg_request_duration_seconds_bucket{provider,model}`
   vs the provider's own p99.
 
 ## I lost the admin token
@@ -136,7 +149,7 @@ the bootstrap path mint a fresh one. There is no backdoor.
 
 ## Where to ask for help
 
-Open an issue at `https://github.com/chirotpal/marg/issues` with:
+Open an issue at `https://github.com/SarthiAI/Marg/issues` with:
 - the Marg version (`marg --version`)
 - the relevant log lines (the JSON access log has the request id)
 - the `x-request-id` from the failing response

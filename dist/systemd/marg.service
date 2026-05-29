@@ -1,6 +1,6 @@
 [Unit]
 Description=Marg AI gateway
-Documentation=https://github.com/SarthiAI/marg
+Documentation=https://github.com/SarthiAI/Marg
 After=network-online.target
 Wants=network-online.target
 
@@ -24,7 +24,8 @@ LimitNPROC=65536
 Restart=on-failure
 RestartSec=5
 
-# Graceful shutdown. Marg drains in-flight requests on SIGTERM up to 30 s.
+# Graceful shutdown. Marg drains in-flight requests on SIGTERM up to 45 s
+# (matches TimeoutStopSec below).
 KillSignal=SIGTERM
 TimeoutStopSec=45
 

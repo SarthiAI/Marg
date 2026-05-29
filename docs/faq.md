@@ -93,17 +93,18 @@ service up.
 
 Two-step:
 1. Mint a fresh one: `POST /admin/auth/tokens`.
-2. Revoke the old one: `POST /admin/auth/tokens/<id>/revoke`.
+2. Revoke the old one: `DELETE /admin/auth/tokens/<id>`.
 
 The 5-second auth cache TTL means the old token will stop working
 within 5 seconds of revoke.
 
 ## Does Marg log my prompts?
 
-Off by default. `marg_request_log` stores model, token counts, cost,
-status, provider, attempts, but never the request or response body.
-Flip `[security].log_prompts = true` only in a private debugging
-environment.
+No. `marg_request_log` stores model, token counts, cost, status,
+provider, attempts, but never the request or response body. The
+`[security].log_prompts` and `log_responses` config keys are parsed
+for forward compatibility but have no effect in v0.1.0; flipping
+them produces no extra log output today.
 
 ## How big is the binary?
 

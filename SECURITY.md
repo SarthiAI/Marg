@@ -73,14 +73,15 @@ operator's IAM, not in Marg.
 - Provider responses can echo prompt content but never our provider
   key (we strip the `Authorization` header on the outbound side
   too, in case a provider ever decided to reflect headers).
-- `marg admin keys` only deals with Marg-issued keys. There is no
+- `marg keys` only deals with Marg-issued keys. There is no
   endpoint that returns a provider key.
 
 ## Body and connection limits
 
 - Configurable `[server].max_body_bytes` cap on chat request bodies.
-  Default 1 MiB. Requests larger than the limit get a 413 with
-  `x-marg-reason: body_too_large`.
+  Default 1 MiB. Requests larger than the limit are refused with a
+  413 by the tower-http `RequestBodyLimitLayer` before the chat
+  handler ever runs.
 - HTTP/1.1 keep-alive and HTTP/2 supported, with axum's default
   per-connection request limit. Backpressure on streaming is
   end-to-end; Marg never buffers a full response.
@@ -116,8 +117,9 @@ operator's IAM, not in Marg.
   the fallback chain. Each fallback runs at most once per request.
 - Hot store unreachable (Redis down) returns 503 with
   `x-marg-reason: hot_store_unreachable`. No silent permits.
-- Durable backend unreachable (Postgres / SQLite) returns 503 with
-  `x-marg-reason: storage_unreachable`. Same fail-closed rule.
+- Durable backend unreachable (Postgres / SQLite) or any other
+  unexpected internal failure on the chat path returns 503 with
+  `x-marg-reason: internal_error`. Same fail-closed rule.
 - Asynchronous write batcher full (queue depth has reached
   `[storage.write_batcher].channel_depth`) returns 503 with
   `x-marg-reason: storage_overloaded`. The request never silently
@@ -161,9 +163,10 @@ operator's IAM, not in Marg.
 - v1.0 request log records: timestamp, request_id, key_id, team,
   model, provider, input_tokens, output_tokens, cost_usd, status,
   failover count, and per-attempt provider plus outcome.
-- No prompt or response body is logged by default. The
-  `[security].log_prompts` and `log_responses` switches are off by
-  default; flip only in private debugging.
+- No prompt or response body is ever logged in v0.1.0. The
+  `[security].log_prompts` and `log_responses` config keys are
+  parsed for forward compatibility but currently have no effect on
+  the running binary.
 - The log lives in the durable backend (SQLite or Postgres). On a
   disk-full event the request log surfaces 503 and never silently
   drops entries.
@@ -230,17 +233,17 @@ add rows as the surface grows.
 
 | Path | Verified | Evidence and notes |
 |------|----------|--------------------|
-| Authorization header never reaches logs | yes | `marg-server::observability::record_outcome` (`marg-server/src/observability.rs:77-87`) writes only method, path, status, latency, request_id, key_id, model, provider. tower-http's `TraceLayer` defaults at `marg-server/src/lib.rs:85` do not log request headers. |
+| Authorization header never reaches logs | yes | `marg-server::observability::record_outcome` (`marg-server/src/observability.rs:77`) writes only method, path, status, latency, request_id, key_id, model, provider. tower-http's `TraceLayer` defaults at `marg-server/src/lib.rs:134` do not log request headers. |
 | Provider key not in `/admin/keys` response | yes | `admin/handlers/keys.rs:79-108` returns only `MargKey` plus `BudgetSpec`. Create at the same file returns only the freshly minted Marg token. No upstream provider field anywhere. |
 | Auth cache invalidated on revoke | yes | `admin/handlers/keys.rs:110-121` calls `state.metrics.clear_budget_remaining(&id)` then `state.key_cache.invalidate_all()`. Coarse but correct: every key's cache entry drops, so the revoke takes effect inside the next request. |
 | Admin token file mode 0600 | yes | `admin/server.rs:106-120` `write_bootstrap_file` uses `OpenOptions::mode(0o600)` under `#[cfg(unix)]` at line 113. |
 | Console uses `textContent`, never `innerHTML` | yes | `console/src/dom.ts:10-58` `h()` helper wraps strings via `document.createTextNode` at line 52. Zero `innerHTML` occurrences anywhere in `console/src/`. |
 | 4xx upstream not failed over | yes | `marg-core/src/request_log.rs:47-52` `is_retriable` matches only `Timeout | Network | Upstream5xx`. `proxy.rs:67,102,169,197` honour the function. |
-| Body size enforced before allocation | yes | `marg-server/src/lib.rs:86` installs `tower_http::limit::RequestBodyLimitLayer::new(cfg.server.max_body_bytes)`. A secondary hardcoded 8 MiB ceiling lives in `chat.rs:23` as a defence-in-depth bound. |
+| Body size enforced before allocation | yes | `marg-server/src/lib.rs:135` installs `tower_http::limit::RequestBodyLimitLayer::new(cfg.server.max_body_bytes)`. A secondary hardcoded 8 MiB ceiling lives in `chat.rs:30` (`MAX_REQUEST_BYTES`) as a defence-in-depth bound. |
 | `file:` secret missing is fatal at startup | yes | `marg-core/src/secret.rs:39-49` returns `Err(ConfigError::Validation)` on a read failure; the server start path propagates. |
 | `env:` secret missing is fatal at startup | yes | Same file, lines 25-37, returns `Err` on `std::env::var` failure. |
 | Bootstrap idempotency | yes | `admin/server.rs:59-67` `count_active_admin_tokens` first; mints only when the count is zero. |
-| Admin auth middleware uniform | yes | `admin/router.rs:13-42` mounts every `/admin/*` JSON route inside the `protected` group with `require_admin_token`. The only public paths on the admin port are `/`, `/console*`, `/admin/openapi.json`, and `/metrics`. |
+| Admin auth middleware uniform | yes | `admin/router.rs:13-39` mounts every `/admin/*` JSON route inside the `protected` group with `require_admin_token`. The only public paths on the admin port are `/`, `/console*`, `/admin/openapi.json`, and `/metrics`. |
 | Streaming: client drop cancels upstream | yes | `chat.rs::stream_response` breaks the loop on the first failed `tx.send` and drops `byte_stream`, which aborts the reqwest streaming request to the upstream provider. `marg_provider_errors_total{kind="client_disconnect"}` increments. The request is logged with status 499. |
 | Write batcher overflow refuses (never silently drops) | yes | `chat.rs::non_stream_response` and `chat.rs::stream_response` route every `add_spend` and `append_request_log` through `state.write_batcher.enqueue(WriteJob::...)`. On `Err(Overflow)` the non-stream path returns `ChatError::StorageOverloaded` (503 + `x-marg-reason: storage_overloaded`); the stream path logs the overflow at warn. The `marg_write_batcher_overflow_total` counter increments per refusal. |
 | Strict-mode rate limit is opt-in only | yes | `quota::check` passes `state.rate_limits.strict_mode` into `hot.allow_request`. The default in `marg-core::config::RateLimitsConfig::default` is `strict_mode = false`, i.e. the documented token-bucket convention. Enabling it requires an explicit `[rate_limits].strict_mode = true` line in marg.toml. |

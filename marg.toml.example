@@ -19,6 +19,13 @@ path = "./marg.db"
 #   dsn = "postgres://marg:secret@localhost:5432/marg"
 #   dsn = "env:MARG_PG_DSN"
 #   dsn = "file:/etc/marg/pg.dsn"
+# Connection pool sizing for the storage backend. Defaults shown.
+# For high-RPS Postgres, raise max_connections and make sure
+# Postgres' own max_connections covers the sum across all Marg
+# instances plus headroom. See docs/install.md (Postgres section)
+# and docs/cluster-deployment.md.
+max_connections = 200
+min_connections = 8
 
 # Optional hot store (used for budget reservation and per-key rpm rate limits).
 # Required for clustered deployments where multiple Marg instances share state.
@@ -93,8 +100,10 @@ timeout_seconds = 120
 # default = "openai"
 
 [security]
-# Marg never logs prompt or response bodies by default. Flip these only for
-# debugging in a private environment.
+# Marg never logs prompt or response bodies. These keys are reserved for a
+# future debug-logging surface and are accepted by the parser today but have
+# no effect in v0.1.0. Leave both false; flipping either will not produce
+# extra log output until the wiring lands in a later release.
 log_prompts = false
 log_responses = false
 
@@ -123,15 +132,17 @@ allowed_origins = []
 # /console/). Auth is the same admin Bearer token as the JSON API.
 
 [cors]
-# Off by default. Operators serving the console UI from a different origin
-# enable and list the origins explicitly.
+# CORS for the proxy port (the one that serves /v1/chat/completions and
+# /metrics). Off by default. Turn on (and list origins) when a browser-side
+# application needs to call Marg directly from a different origin. This
+# block does NOT control the console UI; for that, see [admin.cors] above.
 enabled = false
 allowed_origins = []
 
 [rate_limits]
-# Default requests-per-minute applied when a key has rpm = 0. The full keyed
-# rate-limit enforcement path lives behind Redis in P03; P01 stores rpm on
-# the key for forward compatibility.
+# Default requests-per-minute applied when a key has rpm = 0. The full
+# keyed rate-limit enforcement path runs in-process by default and switches
+# to the shared Redis token-bucket when [storage.hot] is set to redis.
 default_rpm = 0
 # strict_mode = false makes the token-bucket capacity equal rpm: a fresh key
 # can burst up to rpm immediately and then sustains exactly rpm per rolling
@@ -225,12 +236,12 @@ mode = "observe"
 
 # Where the signing keypair lives. Auto-generated mode 0640 on first boot.
 # Back this file up: losing it makes the audit chain unverifiable.
-keypair_path = "./marg.key"
+keypair_path = "/etc/marg/marg.key"
 
 # Where the periodic audit-chain export lands. One JSONL file per process
 # lifetime (cross-restart chain merging is a v1.1 concern, see
 # docs/cluster-deployment.md). The directory is auto-created.
-audit_export_path = "./audit/"
+audit_export_path = "/var/lib/marg/audit/"
 
 # How often the in-memory chain is flushed to disk. Default 60s keeps the
 # crash-loss bound at one minute of traffic.

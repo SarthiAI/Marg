@@ -138,11 +138,22 @@ prices from any provider.
 ### When the upstream does not return token counts
 
 A few OpenAI-compatible endpoints omit the `usage` block on streamed
-responses. Marg in that case falls back to estimating output tokens
-from the response text length divided by an average bytes-per-token
-ratio. The estimate is good to within 5% for English-shaped text.
-If you need exact counts, set `max_tokens` so the caller-supplied
-ceiling is the ground truth.
+responses. In that case Marg records `output_tokens = 0` and falls
+back to a rough input-token estimate derived from the request body
+(input characters divided by four), so `cost_usd` reflects only the
+input side. Two ways to keep cost attribution honest on those
+upstreams:
+
+1. Send `stream_options: { "include_usage": true }` from the client
+   (Marg sets this automatically on every streamed request to the
+   `openai` adapter, but it only takes effect if the upstream
+   honours the option).
+2. Set `max_tokens` on the request so the caller-supplied ceiling
+   is the ground truth for budget reservations.
+
+Native adapters (`anthropic`, `google`, `bedrock`) parse usage out
+of their own wire shapes (stop event, `UsageMetadata`, event-stream
+metadata) and do not hit this fallback.
 
 ## Azure OpenAI
 
@@ -153,13 +164,34 @@ Support lands in v0.2.0 once the configurable-auth-header feature
 ships. Until then, run a Cloudflare Worker or NGINX shim that
 translates the header.
 
+## Native adapters for non-OpenAI wire shapes
+
+Marg also ships four first-class native adapters for upstreams that do
+not speak the OpenAI shape directly. Each lives under its own reserved
+block and Marg translates the inbound OpenAI-shape body into the
+upstream's wire format on the fly:
+
+- `[providers.anthropic]`: Anthropic Messages API
+  (`/v1/messages`, `x-api-key` auth, `anthropic-version` header).
+- `[providers.google]`: Google Generative Language API
+  (`generativelanguage.googleapis.com`, request body in Google's
+  `contents` / `generationConfig` shape).
+- `[providers.bedrock]`: AWS Bedrock Runtime, signed with SigV4.
+  Uses the configured `region` plus AWS credentials.
+
+These adapters are reserved provider names (`openai`, `anthropic`,
+`google`, `bedrock`) and cannot collide with entries under
+`openai_compatible`. See `config-reference.md` for every field each
+block accepts.
+
+If you would rather keep one adapter and one wire shape, every native
+provider above also exposes an OpenAI-compatible endpoint you can
+reach via `[providers.openai_compatible.<name>]` with the right
+`base_url`. Both paths work; pick by which auth surface you would
+rather operate.
+
 ## What Marg does NOT do per provider
 
-- No provider-specific request body translation. Marg forwards the
-  OpenAI-shape body unchanged. If your upstream expects a different
-  body shape (e.g. native Anthropic, native Google Generative
-  Language API, AWS Bedrock InvokeModel), use that upstream's
-  OpenAI-compatible endpoint instead.
 - No automatic provider discovery. Each provider you want Marg to
   reach must be in `marg.toml`.
 - No SDK in any language. Use the OpenAI SDK with `base_url` pointed

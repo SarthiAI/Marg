@@ -31,8 +31,13 @@ Marg instances:
 Redis:
 - Must be reachable from every Marg node.
 - Single-shard ElastiCache is fine up to ~10 Marg nodes. Beyond
-  that, switch to clustered mode (`redis_cluster_mode = true` in
-  `[storage.hot]`).
+  that, switch to clustered Redis. The bundled Redis client speaks to
+  a single endpoint and accepts `redis://`, `rediss://`,
+  `redis+unix://`, or `unix://` URLs. Point `[storage.hot].url` at the
+  cluster's **configuration endpoint** (ElastiCache exposes one per
+  cluster) or at a Redis-protocol proxy in front of the shards, so the
+  cluster appears as one endpoint to Marg. A `redis-cluster://` scheme
+  is not recognised by the client.
 - Enable transit encryption and at-rest encryption.
 
 Postgres:
@@ -75,9 +80,8 @@ dsn     = "env:MARG_PG_DSN"
 
 [storage.hot]
 backend = "redis"
-url     = "env:MARG_REDIS_URL"
+url     = "env:MARG_REDIS_URL"     # cluster: point at the cluster configuration endpoint or a Redis-protocol proxy, using redis:// or rediss://
 key_prefix = "marg"
-redis_cluster_mode = true     # only when using cluster-mode Redis
 
 [admin]
 bind = "0.0.0.0:8081"
@@ -184,10 +188,13 @@ shared state is in Redis and Postgres.
   - terminate the host
 ```
 
-`SIGTERM` flips both ports into draining mode and waits up to 30s
-for in-flight requests to finish. Streaming connections that exceed
-the drain window are closed cleanly with a final SSE event so the
-client can reconnect.
+`SIGTERM` triggers axum's graceful shutdown on both ports: new
+connections are refused, in-flight requests (streaming included) are
+allowed to complete on their existing tasks. The shipped systemd unit
+caps the total drain window at `TimeoutStopSec=45`. Streaming
+connections still running when that window expires are terminated by
+the supervisor when systemd's `KillSignal` fires; clients see a
+truncated stream and should reconnect.
 
 ## Disaster recovery
 

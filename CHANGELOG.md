@@ -67,26 +67,40 @@ baked in from the first request.
   - `x-request-id` echoed back to clients (operator-supplied id
     honoured, fresh UUID otherwise).
 - Admin HTTP API on a separate port (default `127.0.0.1:8081`):
-  - Keys: create, list, detail, revoke.
-  - Budgets: list, set cap and rpm.
+  - Keys: create, list, detail, revoke, invalidate.
+  - Budgets: set cap and rpm (upsert), fetch per key.
   - Routes: persisted CRUD with policy reload, side-by-side with
     config-file routes.
   - Policy: view live routes plus pricing, reload-now.
   - Providers: health derived from in-process Prometheus counters.
   - Requests: filtered request log query.
+  - Audit: list and export Kavach signed audit entries, verify a
+    chain, fetch chain status.
   - Admin tokens: create, list, revoke. Bootstrap token written
     0600 on first boot.
   - OpenAPI 3.1 spec at `/admin/openapi.json`.
 - Marg Console: an embedded TypeScript single-page app served by the
-  admin port. Eight pages covering every admin operation. Sign in
-  with the bootstrap admin token. Bundle is built and committed at
-  compile time, so `cargo build` succeeds without Node installed.
-- CLI subcommands: `marg start`, `marg db migrate`, `marg admin
-  bootstrap`, `marg admin tokens {list, revoke}`, `marg keys {create,
-  list, revoke}`, `marg budget {show, set}`, `marg log tail`.
-- Graceful shutdown on `SIGTERM` and `SIGINT`. Both ports drain
-  in-flight requests, streaming connections close cleanly with a
-  final SSE event.
+  admin port. Ten pages (dashboard, keys, budgets, routes, policy,
+  providers, requests, audit, admin tokens, API reference) plus a
+  sign-in screen, covering every admin operation. Sign in with the
+  bootstrap admin token. Bundle is built and committed at compile
+  time, so `cargo build` succeeds without Node installed.
+- CLI subcommands: `marg start`, `marg version`, `marg init`,
+  `marg db migrate`, `marg admin bootstrap`,
+  `marg admin tokens {list, revoke}`, `marg keys {create, list, revoke}`,
+  `marg budget {show, set}`, `marg log tail`, `marg policy audit`.
+- Graceful shutdown on `SIGTERM` and `SIGINT`. Both ports stop
+  accepting new connections and let in-flight requests (streaming
+  included) finish on the existing axum tasks. Process supervision
+  (the shipped systemd unit) caps the total drain window at
+  `TimeoutStopSec=45`; anything still running when systemd's
+  KillSignal fires is terminated by the supervisor.
+- CORS layers on both ports, off by default. `[cors]` controls the
+  proxy port (`/v1/chat/completions`, `/metrics`) for browser-side
+  applications calling Marg directly from a different origin.
+  `[admin.cors]` controls the admin port when the Marg Console is
+  served from a different origin (for example, the Vite dev server).
+  Both accept an explicit `allowed_origins` list.
 - Health and readiness:
   - `GET /health` always 200 while the process is up.
   - `GET /ready` returns 503 with per-backend diagnostic when
@@ -127,9 +141,11 @@ Validated by the internal benchmark suite. Single-instance measured numbers and 
   upstream rate-limit budgets must read them from the upstream's
   documented Prometheus / dashboard surface; Marg's per-key budget
   and rpm controls are independent. Forwarding lands in v0.2.0.
-- For upstreams that elide the `usage` block on streamed responses,
-  output token count is estimated from response length. Set
-  `max_tokens` if you need an exact ceiling.
+- For OpenAI-compatible upstreams that elide the `usage` block on
+  streamed responses, Marg records `output_tokens = 0` and `cost_usd`
+  reflects only the input side. Send `stream_options.include_usage = true`
+  if the upstream honours it, or set `max_tokens` so the caller-supplied
+  ceiling is the ground truth.
 - The web console is unauthenticated by default to the admin
   Bearer token. There is no SSO integration in v1.0.
 

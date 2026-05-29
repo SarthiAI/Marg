@@ -1,4 +1,4 @@
-# Kavach in Marg v1.0
+# Kavach in Marg
 
 Marg ships with Kavach baked in. Every binary, every deployment, every install
 includes the post-quantum signed audit chain and the default-deny gate. There
@@ -136,8 +136,9 @@ permit verify it offline against Marg's published public key bundle:
 use kavach_pq::{PqTokenSigner, KavachKeyPair};
 use kavach_core::TokenSigner;
 
-// Caller fetches the operator's public key bundle out of band, e.g. from a
-// signed directory or `marg admin keys public-bundle`.
+// Caller fetches the operator's public key bundle out of band (operator-
+// published artefact, e.g. a signed directory entry). v1.0 ships no built-in
+// endpoint or CLI for this; the bundle is distributed by the operator.
 let verifier = PqTokenSigner::hybrid(
     /* dummy signing keys, only the verifying keys are used in verify */
     Vec::new(), public_bundle.ml_dsa_verifying_key,

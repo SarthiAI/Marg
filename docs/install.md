@@ -116,8 +116,8 @@ the release notes.
 ## Building from source
 
 ```bash
-git clone https://github.com/chirotpal/marg
-cd marg/marg
+git clone https://github.com/SarthiAI/Marg
+cd Marg
 cargo build --release
 ```
 
@@ -242,8 +242,9 @@ console at `http://127.0.0.1:8081/`.
 ## Upgrade
 
 The one-line installer is the canonical upgrade path. Re-run it; the
-script picks the latest release, refuses to clobber a same-version
-binary unless `MARG_FORCE=1` is set, and leaves your existing
+script picks the latest release, refuses to clobber any existing
+`marg` binary at the install prefix unless `MARG_FORCE=1` is set
+(a guardrail against silent downgrades), and leaves your existing
 `marg.toml` / `policy.toml` untouched (`marg init` is idempotent).
 
 ```bash

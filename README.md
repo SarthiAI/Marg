@@ -113,31 +113,35 @@ speaks `/v1/chat/completions`), the block carries an extra `base_url`
 pointing at the upstream:
 
 ```toml
-# OpenAI direct
+# OpenAI direct (native adapter)
 [providers.openai]
 api_key = "env:OPENAI_API_KEY"
+base_url = "https://api.openai.com"
 
 # OpenRouter: OpenAI-compatible meta-provider, many models behind one key
-[providers.openrouter]
+[providers.openai_compatible.openrouter]
 api_key = "env:OPENROUTER_API_KEY"
-base_url = "https://openrouter.ai/api"
+base_url = "https://openrouter.ai/api/v1"
 
 # Cerebras: OpenAI-compatible, LPU inference
-[providers.cerebras]
+[providers.openai_compatible.cerebras]
 api_key = "env:CEREBRAS_API_KEY"
-base_url = "https://api.cerebras.ai"
+base_url = "https://api.cerebras.ai/v1"
 
 # Groq: OpenAI-compatible, sub-second responses
-[providers.groq]
+[providers.openai_compatible.groq]
 api_key = "env:GROQ_API_KEY"
-base_url = "https://api.groq.com/openai"
+base_url = "https://api.groq.com/openai/v1"
 
 # Self-hosted vLLM / LM Studio / Ollama, no real key needed
-[providers.local_llama]
+[providers.openai_compatible.local_llama]
 api_key = "plain:not-needed"
-base_url = "http://10.0.0.5:8000"
+base_url = "http://10.0.0.5:8000/v1"
 
-# Native adapter, no base_url (Marg knows the upstream wire format)
+# Native adapter (Marg translates the OpenAI-shape request into the
+# Anthropic Messages API on the fly). base_url defaults to
+# https://api.anthropic.com; override only for VPC endpoints or test
+# stubs. Same shape applies for [providers.google] and [providers.bedrock].
 [providers.anthropic]
 api_key = "file:/var/run/secrets/marg/anthropic-api-key"
 ```
@@ -176,14 +180,16 @@ auth header. That is the entire blast radius.
 
 **What never sees a provider key:**
 
-- Standard Marg logs at any level. Prompts and responses are off by
-  default (`log_prompts = false`, `log_responses = false`); even with
-  them on, the upstream auth header is never logged.
+- Standard Marg logs at any level. Prompts and responses are never
+  written to logs in v0.1.0; the `[security].log_prompts` and
+  `log_responses` config keys are parsed for forward compatibility
+  but have no effect on the running binary today.
 - The request log. It records principal, model, tokens, cost, outcome.
   Never the upstream auth.
 - The signed audit chain. Same rule.
-- The admin API. `GET /admin/providers` returns health and configured
-  base URLs, never the keys themselves.
+- The admin API. `GET /admin/providers/health` returns derived health
+  counters per configured provider; the response shape never carries
+  credentials or the configured base URL.
 - The Marg Console. Same surface as the admin API.
 - Application traffic. Apps hold `marg_live_...` keys, validated by
   Marg against its own hashed store; the real provider auth header is
@@ -209,9 +215,10 @@ The bootstrap admin token was printed during `marg init` and saved to
 the sign-in screen. Subsequent admin tokens can be created and revoked
 from inside the console, so the bootstrap token is only needed once.
 
-The console has nine pages, all served from the same admin port over
-the same Bearer-token auth as the HTTP admin API. No separate
-deployment, no external SPA host, no Node runtime at the edge.
+The console has ten pages plus a sign-in screen, all served from the
+same admin port over the same Bearer-token auth as the HTTP admin API.
+No separate deployment, no external SPA host, no Node runtime at the
+edge.
 
 | Page | What it does |
 |---|---|
@@ -220,10 +227,11 @@ deployment, no external SPA host, no Node runtime at the edge.
 | **Budgets** | Per-key daily USD caps and requests-per-minute, with inline editors and a set-by-id drawer. |
 | **Routes** | Persisted routes (editable in the UI) split from config-file routes (read-only). Create a route with a single primary plus ordered fallbacks, or a weighted A/B split, in one drawer. |
 | **Policy** | Live view of the routing engine plus the pricing table. One-click reload reads config and policy files from disk and atomically swaps the live engine. Kavach mode (observe / enforce) and signer status visible at the top. |
-| **Providers** | Per-provider health derived from in-process Prometheus counters (requests, errors, current latency). Polls every 10 seconds. |
+| **Providers** | Per-provider health derived from in-process Prometheus counters (successes, 5xx and 4xx error counts, timeouts, network errors). Polls every 10 seconds. |
 | **Requests** | Filtered request log: filter by since-time, key, model, provider, errors-only. Per-row detail panel shows the full attempt chain (which provider tried first, what failed, which fallback served). |
 | **Audit** | Kavach signed audit chain: every gate verdict, every key event, every policy reload. Filterable by time window and verdict. Useful in observe mode to see what would be refused before flipping to enforce. |
 | **Admin tokens** | Mint, list, and revoke admin Bearer tokens. New tokens shown once. Revoke is confirm-by-prefix to avoid revoking the wrong one. |
+| **API** | Live OpenAPI reference rendered from the running binary. Every admin endpoint, its parameters, request body, and response shape. Useful for scripting against the same surface the console uses. |
 
 The console is a 13 KB gzipped TypeScript single-page app (no framework
 runtime) and shares the live process state with the admin API. The
@@ -323,12 +331,16 @@ file. Engineering owns the application. Neither has to coordinate with
 the other to ship a change. Reload happens via one HTTP call. No
 restart.
 
-**Drift detection.** Kavach watches each API key for behavior that
+**Drift detection.** Kavach can watch each API key for behavior that
 does not match its history. A key suddenly calling from a different
 country, or sending 50 times the usual volume, or running on an
-unknown device. Drift triggers a refuse plus a signed audit event,
-before the call reaches the provider. Same idea as fraud detection on
-a credit card.
+unknown device. When a drift signal trips, Kavach refuses the call and
+writes a signed audit event before the request reaches the provider.
+Same idea as fraud detection on a credit card. Drift detection is
+opt-in: four detectors (geo, session-age, device, behavior) ship in
+the binary, each inert until you enable it under
+`[kavach.drift]` in your config. Start with whichever signal matches
+the risk you actually care about; you do not have to turn them all on.
 
 **Tamper-evident, post-quantum signed audit log.** Every gate verdict,
 every key event, every policy reload becomes a chain entry. Each entry
@@ -400,9 +412,8 @@ chain, drift detection all active):
 
 | Workload | Sustained |
 |---|---|
-| Chat passthrough, p95 under 15 ms | ~3,000 requests per second |
-| Saturation cliff (above this, p95 climbs sharply) | ~3,250 requests per second |
-| Hot-path decision time (auth, budget, rate limit, route, gate, audit append) | mean ~1.9 ms |
+| Chat passthrough, p95 under 15 ms | ~6,000 requests per second (5,998 over a 5-minute sustained run, p95 14 ms) |
+| Hot-path decision time (auth, budget, rate limit, route, gate, audit append) | mean 0.73 ms over 1.96 M samples |
 | Streaming chat (SSE) | fully streaming, token-by-token backpressure |
 
 Marg is stateless. Postgres and Redis are shared, so adding instances

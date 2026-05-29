@@ -15,12 +15,18 @@ request -> match the first [[routes]] entry -> attempt primary
   if all attempts fail: 502 ProviderWithAttempts
 ```
 
-`split` is an alternative to `primary` + `fallback`:
+`split` is an alternative to `primary`. The chosen bucket inherits the
+route's `fallback` list (if any):
 
 ```
 request -> match -> draw bucket from weights -> attempt the chosen provider
-  no fallback in split mode by design (A/B comparison stays clean)
+  if 5xx / timeout / network: attempt fallback[0]
+    ...
 ```
+
+Most A/B routes omit `fallback` entirely so the cohort assignment
+stays clean. Set one only when keeping the experiment alive through
+an upstream outage matters more than measurement purity.
 
 ## Match clauses
 
@@ -50,7 +56,8 @@ What happens:
    override after the colon).
 5. If Anthropic succeeds, the response carries
    `x-marg-provider: anthropic`, `x-marg-model: claude-3-5-sonnet`,
-   `x-marg-failovers: 1`, and `x-marg-attempts: openai/gpt-4o,anthropic/claude-3-5-sonnet`.
+   `x-marg-failovers: 1`, and `x-marg-attempts: 2` (the integer count
+   of attempts, including the successful one).
 
 Failover is triggered by:
 
@@ -78,8 +85,11 @@ split = [
 For requests from team `experimental`, Marg picks a bucket by
 weighted random draw. The split is stable per request, not per key,
 so two consecutive requests from the same key can land on different
-providers. Split routes do not failover; the cohort assignment
-stays clean.
+providers. With no `fallback` list (as above), a 5xx from the chosen
+bucket surfaces directly and the cohort assignment stays clean. Add a
+`fallback = [...]` line to the same route only when keeping the
+experiment alive through an upstream outage matters more than the A/B
+measurement.
 
 Weights are integers and need not sum to 100. The split is
 proportional to the weights.
@@ -117,7 +127,7 @@ policy.
 | `x-marg-provider` | Which provider served the response. |
 | `x-marg-model` | Which upstream model name was actually called. |
 | `x-marg-failovers` | Count of failover attempts (0 if primary succeeded). |
-| `x-marg-attempts` | Comma-separated `provider/model` for each attempt. |
+| `x-marg-attempts` | Integer count of attempts made for this request (primary plus any fallbacks tried). The full per-attempt breakdown is in the request log, queryable via `GET /admin/requests`. |
 | `x-marg-reason` | On error responses, the structured reason code (e.g. `budget_exceeded`, `hot_store_unreachable`, `rate_limited`). |
 | `x-request-id` | Operator-supplied id or fresh UUID per request. |
 
