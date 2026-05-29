@@ -25,7 +25,7 @@ jobs:
             runner: ubuntu-22.04
             archive: linux-x64
           - target: aarch64-unknown-linux-gnu
-            runner: ubuntu-22.04
+            runner: ubuntu-22.04-arm
             archive: linux-arm64
           - target: aarch64-apple-darwin
             runner: macos-14
@@ -39,12 +39,6 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
-      - name: install aarch64-linux cross toolchain
-        if: matrix.target == 'aarch64-unknown-linux-gnu'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y gcc-aarch64-linux-gnu
-
       - name: build console bundle
         run: |
           cd console
@@ -54,9 +48,6 @@ jobs:
       - name: cargo build
         env:
           MARG_RELEASE_TARGET: ${{ matrix.target }}
-          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
-          CC_aarch64_unknown_linux_gnu: aarch64-linux-gnu-gcc
-          CXX_aarch64_unknown_linux_gnu: aarch64-linux-gnu-g++
         run: cargo build --release --target ${{ matrix.target }}
 
       - name: stage archive
@@ -149,16 +140,21 @@ jobs:
           name: linux-arm64
           path: ctx-arm64
 
-      - name: extract binaries
+      - name: stage binaries
         run: |
-          mkdir -p ctx
-          tar -xzf ctx-x64/marg-*-linux-x64.tar.gz   -C ctx --strip-components=1
-          mv ctx/marg ctx/marg.amd64
-          tar -xzf ctx-arm64/marg-*-linux-arm64.tar.gz -C ctx --strip-components=1
-          mv ctx/marg ctx/marg.arm64
+          mkdir -p docker/bin
+          tar -xzf ctx-x64/marg-*-linux-x64.tar.gz   -C docker/bin --strip-components=1
+          mv docker/bin/marg docker/bin/marg-amd64
+          tar -xzf ctx-arm64/marg-*-linux-arm64.tar.gz -C docker/bin --strip-components=1
+          mv docker/bin/marg docker/bin/marg-arm64
+          chmod +x docker/bin/marg-amd64 docker/bin/marg-arm64
+          ls -la docker/bin
 
-      - name: stage dockerfile
-        run: cp Dockerfile ctx/Dockerfile
+      - name: resolve docker tag
+        id: tag
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
 
       - name: set up qemu
         uses: docker/setup-qemu-action@v3
@@ -169,9 +165,35 @@ jobs:
       - name: build and push
         uses: docker/build-push-action@v6
         with:
-          context: ctx
+          context: .
+          file: docker/Dockerfile
           platforms: linux/amd64,linux/arm64
           push: true
           tags: |
-            docker.io/${{ env.DOCKERHUB_NAMESPACE }}/marg:${{ github.ref_name }}
+            docker.io/${{ env.DOCKERHUB_NAMESPACE }}/marg:${{ steps.tag.outputs.tag }}
             docker.io/${{ env.DOCKERHUB_NAMESPACE }}/marg:latest
+
+      - name: smoke pushed image (boots + /health=200)
+        run: |
+          set -e
+          docker run -d --name marg-smoke -p 8080:8080 -p 8081:8081 \
+            docker.io/${{ env.DOCKERHUB_NAMESPACE }}/marg:${{ steps.tag.outputs.tag }}
+          deadline=$((SECONDS + 30))
+          status=""
+          while [ "$SECONDS" -lt "$deadline" ]; do
+            status=$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8080/health || true)
+            if [ "$status" = "200" ]; then
+              break
+            fi
+            sleep 1
+          done
+          if [ "$status" != "200" ]; then
+            echo "ERROR: /health never returned 200 (last=$status). Container logs:" >&2
+            docker logs marg-smoke >&2 || true
+            docker stop marg-smoke >/dev/null 2>&1 || true
+            docker rm marg-smoke >/dev/null 2>&1 || true
+            exit 1
+          fi
+          docker stop marg-smoke >/dev/null
+          docker rm marg-smoke >/dev/null
+          echo "OK: image came up + /health=200"

@@ -479,7 +479,7 @@ The build is self-contained: no system OpenSSL, no Node.js at runtime
 ```
 marg/
 ├── Cargo.toml                workspace root
-├── Dockerfile                container image
+├── docker/Dockerfile         container image
 ├── marg-cli/                 binary entry point, marg command
 ├── marg-core/                core types, config loader, error definitions
 ├── marg-server/              axum server, routes, write batcher, Kavach runtime

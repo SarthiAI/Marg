@@ -4,12 +4,43 @@ All notable changes to Marg are documented in this file. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), versioning
 follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.1.1] - unreleased
+## [0.1.2] - unreleased
+
+Hotfix release. The 0.1.0 and 0.1.1 Docker image was unstartable on
+amd64 (and arm64): `exec /marg: no such file or directory` on every
+container run. Root cause was a `FROM scratch` base image that could
+not host the dynamic Rust binary the workflow produces. 0.1.2 ships a
+container image that actually runs.
+
+### Fixed
+
+- Docker image base switched from `FROM scratch` to
+  `debian:bookworm-slim` plus `ca-certificates`, `tini`, and `curl`.
+  Final image is around 30 MB. The binary inside is byte-identical to
+  the one in the matching release archive. The container runs as the
+  non-root `marg` system user (uid 1001), matching the system user the
+  curl-pipe-sh installer creates on bare metal so file permissions stay
+  consistent across both install paths.
+- Release workflow's aarch64-linux build moved from x86_64-with-cross
+  to the native GitHub-hosted `ubuntu-22.04-arm` runner. No more
+  `gcc-aarch64-linux-gnu` install, no linker env vars. Plain
+  `cargo build --release --target ...` for all three targets. Same
+  binaries, simpler workflow.
+- Release workflow added a post-push smoke step that pulls the
+  just-published Docker image, runs it, and verifies `/health` returns
+  `200` before the workflow turns green. The release fails red if the
+  image cannot boot.
+- Docker Hub tag stripped its leading `v` to match the documented
+  reference (`sarthiai/marg:0.1.2`, not `:v0.1.2`).
+- `Dockerfile` moved from repo root to `docker/Dockerfile` to match
+  the bundled binaries staging path used by the workflow.
+
+## [0.1.1] - 2026-05-29
 
 Hotfix release. The 0.1.0 installer dropped the bundled systemd unit
 into place but did not create the `marg` system user and group the
 unit runs under, so `systemctl start marg` failed with exit code
-217/USER on a fresh Linux box. 0.1.1 fixes the installer.
+217/USER on a fresh Linux box. 0.1.1 fixed the installer.
 
 ### Fixed
 

@@ -41,10 +41,13 @@ docker run -d --name marg -p 8080:8080 -p 8081:8081 \
   sarthiai/marg:latest
 ```
 
-The container is `FROM scratch` plus the static binary. Image size is
-around 16 MB. On first start `marg start` notices the missing
-`/etc/marg/marg.toml`, runs `marg init --auto` to write defaults and mint
-the admin token, then continues into the proxy and admin servers.
+The container is `debian:bookworm-slim` plus `ca-certificates`, `tini`,
+and `curl`. Image size is around 30 MB. The binary inside the image is
+byte-identical to the one shipped in the same release's archive. On
+first start `marg start` notices the missing `/etc/marg/marg.toml`,
+runs `marg init --auto` to write defaults and mint the admin token,
+then continues into the proxy and admin servers. The container runs as
+the non-root `marg` system user.
 
 Persist state by mounting a named volume at `/etc/marg`. That keeps the
 SQLite database, the signed audit chain, the Kavach signing keypair, and
