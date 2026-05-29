@@ -27,7 +27,6 @@ jobs:
           - target: aarch64-unknown-linux-gnu
             runner: ubuntu-22.04
             archive: linux-arm64
-            cross: true
           - target: aarch64-apple-darwin
             runner: macos-14
             archive: macos-arm64
@@ -40,9 +39,11 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
-      - name: install cross
-        if: matrix.cross
-        run: cargo install cross --git https://github.com/cross-rs/cross --rev 4090beca3cfffa44371a5bba524de3a578aa46c3
+      - name: install aarch64-linux cross toolchain
+        if: matrix.target == 'aarch64-unknown-linux-gnu'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu
 
       - name: build console bundle
         run: |
@@ -53,12 +54,10 @@ jobs:
       - name: cargo build
         env:
           MARG_RELEASE_TARGET: ${{ matrix.target }}
-        run: |
-          if [[ "${{ matrix.cross }}" == "true" ]]; then
-            cross build --release --target ${{ matrix.target }}
-          else
-            cargo build --release --target ${{ matrix.target }}
-          fi
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
+          CC_aarch64_unknown_linux_gnu: aarch64-linux-gnu-gcc
+          CXX_aarch64_unknown_linux_gnu: aarch64-linux-gnu-g++
+        run: cargo build --release --target ${{ matrix.target }}
 
       - name: stage archive
         id: stage
