@@ -13,7 +13,7 @@ version = "0.1.0"
 edition = "2021"
 license = "Elastic-2.0"
 rust-version = "1.75"
-authors = ["The Marg Contributors"]
+authors = ["Chirotpal Das"]
 repository = "https://github.com/SarthiAI/Marg"
 
 [workspace.dependencies]

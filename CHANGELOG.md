@@ -10,7 +10,8 @@ The first published release of Marg. OpenAI-compatible proxy with
 provider failover, budgets, rate limits, pluggable storage,
 observability, an embedded operator console, and Kavach governance
 (default-deny gate, drift detection, post-quantum signed audit chain)
-baked in from the first request.
+baked in from the first request. Marg 0.1.0 is single-server only;
+cluster deployment is a future release.
 
 ### Added
 
