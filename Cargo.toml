@@ -9,7 +9,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.1.2"
+version = "0.1.3"
 edition = "2021"
 license = "Elastic-2.0"
 rust-version = "1.75"
@@ -72,10 +72,10 @@ kavach-core  = ">=0.1.2, <0.2.0"
 kavach-pq    = ">=0.1.2, <0.2.0"
 kavach-redis = ">=0.1.2, <0.2.0"
 
-marg-core = { path = "marg-core", version = "0.1.2" }
-marg-server = { path = "marg-server", version = "0.1.2" }
-marg-storage = { path = "marg-storage", version = "0.1.2" }
-marg-providers = { path = "marg-providers", version = "0.1.2" }
+marg-core = { path = "marg-core", version = "0.1.3" }
+marg-server = { path = "marg-server", version = "0.1.3" }
+marg-storage = { path = "marg-storage", version = "0.1.3" }
+marg-providers = { path = "marg-providers", version = "0.1.3" }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

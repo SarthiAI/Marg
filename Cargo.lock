@@ -1557,7 +1557,7 @@ checksum = "112b39cec0b298b6c1999fee3e31427f74f676e4cb9879ed1a121b43661a4154"
 
 [[package]]
 name = "marg-cli"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "anyhow",
  "chrono",
@@ -1575,7 +1575,7 @@ dependencies = [
 
 [[package]]
 name = "marg-core"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "chrono",
  "data-encoding",
@@ -1592,7 +1592,7 @@ dependencies = [
 
 [[package]]
 name = "marg-providers"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "async-stream",
  "async-trait",
@@ -1616,7 +1616,7 @@ dependencies = [
 
 [[package]]
 name = "marg-server"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -1654,7 +1654,7 @@ dependencies = [
 
 [[package]]
 name = "marg-storage"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "async-trait",
  "chrono",
