@@ -6,6 +6,10 @@ license.workspace = true
 rust-version.workspace = true
 authors.workspace = true
 repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
 description = "Marg storage trait and backend implementations (SQLite default, Postgres recommended, Redis hot store)"
 
 [features]

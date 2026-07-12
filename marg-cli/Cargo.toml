@@ -7,6 +7,7 @@ rust-version.workspace = true
 authors.workspace = true
 repository.workspace = true
 description = "Marg AI gateway command-line entry point"
+publish = false
 
 [[bin]]
 name = "marg"

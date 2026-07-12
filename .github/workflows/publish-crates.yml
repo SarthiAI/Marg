@@ -1,0 +1,126 @@
+name: publish-crates
+
+# Publishes the Marg library crates to crates.io in dependency order:
+#   marg-core -> marg-storage -> marg-providers -> marg-server
+# (marg-storage and marg-providers only need marg-core, so their order is
+# interchangeable; everything else is strictly ordered.) The binary crate
+# (marg-cli) is publish=false and is never uploaded.
+#
+# Auth uses the org-level CARGO_REGISTRY_TOKEN secret. crates.io publishes are
+# permanent: a version can be yanked but never deleted, and a name is reserved
+# forever once published. So a real publish only runs on a version tag; every
+# other path is dry-run.
+
+on:
+  # Real publish: push a version tag that matches the workspace version.
+  push:
+    tags:
+      - "v*.*.*"
+  # Manual: defaults to a safe dry-run. Set dry_run=false to actually publish.
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Dry run only (package + verify, do not upload)"
+        type: boolean
+        default: true
+  # Guard: on any manifest change, prove every crate still packages cleanly.
+  pull_request:
+    paths:
+      - "**/Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/publish-crates.yml"
+
+permissions:
+  contents: read
+
+env:
+  # Ordered list of crates to publish. Space-separated, dependency order.
+  CRATES: "marg-core marg-storage marg-providers marg-server"
+
+jobs:
+  publish:
+    name: publish crates
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: install rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: publish-${{ hashFiles('Cargo.lock') }}
+
+      # A real publish only happens on a tag or an explicit dry_run=false
+      # dispatch. Everything else (PRs, default dispatch) stays dry-run.
+      - name: decide mode
+        id: mode
+        run: |
+          if [ "${{ github.event_name }}" = "push" ]; then
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+          elif [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.dry_run }}" = "false" ]; then
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # On a tag, the tag (minus the leading v) must equal the workspace
+      # version, so we never tag v0.2.0 and accidentally publish 0.1.2.
+      - name: verify tag matches workspace version
+        if: github.event_name == 'push'
+        run: |
+          WS_VERSION="$(grep -m1 '^version' Cargo.toml | sed -E 's/version *= *"([^"]+)".*/\1/')"
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          echo "workspace version: $WS_VERSION | tag: $TAG_VERSION"
+          if [ "$WS_VERSION" != "$TAG_VERSION" ]; then
+            echo "::error::tag $GITHUB_REF_NAME does not match workspace version $WS_VERSION"
+            exit 1
+          fi
+
+      # Guard (PRs + default dispatch). We cannot dry-run-package the downstream
+      # crates before their internal deps are on crates.io - `cargo package`
+      # resolves stripped path deps against the registry and fails on anything
+      # not yet published. So the guard is: (1) the whole workspace compiles with
+      # the path deps, which catches manifest and code breakage; (2) the base
+      # crate (no internal deps) packages cleanly, which validates the crates.io
+      # metadata shape. The downstream crates are verified at real-publish time,
+      # in order, once each upstream is live.
+      - name: guard - workspace compiles
+        if: steps.mode.outputs.publish == 'false'
+        run: cargo check --workspace --locked
+
+      - name: guard - base crate packages cleanly
+        if: steps.mode.outputs.publish == 'false'
+        run: |
+          cargo package -p marg-core --locked
+          echo "marg-core packages cleanly; downstream crates verify at publish time (need upstream crates on crates.io first)."
+
+      # Real publish, in dependency order. cargo publish waits for each crate to
+      # appear in the index before returning, so the next crate's verification
+      # build can resolve it from crates.io.
+      - name: publish all crates
+        if: steps.mode.outputs.publish == 'true'
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: |
+          set -euo pipefail
+          for c in $CRATES; do
+            echo "::group::publish $c"
+            # If this exact version is already on crates.io (e.g. a re-run after
+            # a partial failure), skip it instead of failing the whole run.
+            VER="$(cargo metadata --format-version 1 --no-deps \
+              | python3 -c "import json,sys,os; m=json.load(sys.stdin); print(next(p['version'] for p in m['packages'] if p['name']==os.environ['C']))" C="$c")"
+            if curl -sf -o /dev/null "https://crates.io/api/v1/crates/$c/$VER"; then
+              echo "$c@$VER already published, skipping."
+            else
+              cargo publish -p "$c" --locked
+              echo "published $c@$VER"
+            fi
+            echo "::endgroup::"
+          done
+          echo "Workspace published to crates.io."

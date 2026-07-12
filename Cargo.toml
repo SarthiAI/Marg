@@ -15,6 +15,10 @@ license = "Elastic-2.0"
 rust-version = "1.75"
 authors = ["Chirotpal Das"]
 repository = "https://github.com/SarthiAI/Marg"
+homepage = "https://github.com/SarthiAI/Marg"
+readme = "README.md"
+keywords = ["llm", "ai-gateway", "proxy", "openai", "gateway"]
+categories = ["web-programming", "command-line-utilities", "network-programming"]
 
 [workspace.dependencies]
 tokio = { version = "1", features = ["full"] }
@@ -68,10 +72,10 @@ kavach-core  = ">=0.1.2, <0.2.0"
 kavach-pq    = ">=0.1.2, <0.2.0"
 kavach-redis = ">=0.1.2, <0.2.0"
 
-marg-core = { path = "marg-core" }
-marg-server = { path = "marg-server" }
-marg-storage = { path = "marg-storage" }
-marg-providers = { path = "marg-providers" }
+marg-core = { path = "marg-core", version = "0.1.2" }
+marg-server = { path = "marg-server", version = "0.1.2" }
+marg-storage = { path = "marg-storage", version = "0.1.2" }
+marg-providers = { path = "marg-providers", version = "0.1.2" }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

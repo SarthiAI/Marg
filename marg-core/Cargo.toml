@@ -6,6 +6,10 @@ license.workspace = true
 rust-version.workspace = true
 authors.workspace = true
 repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
 description = "Marg core types, configuration loader, and error definitions"
 
 [dependencies]
