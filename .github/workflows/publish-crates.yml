@@ -109,13 +109,16 @@ jobs:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
         run: |
           set -euo pipefail
+          # Every workspace crate shares one version (workspace.package.version).
+          VER="$(grep -m1 '^version' Cargo.toml | sed -E 's/version *= *"([^"]+)".*/\1/')"
+          echo "publishing workspace version $VER"
           for c in $CRATES; do
             echo "::group::publish $c"
             # If this exact version is already on crates.io (e.g. a re-run after
             # a partial failure), skip it instead of failing the whole run.
-            VER="$(cargo metadata --format-version 1 --no-deps \
-              | python3 -c "import json,sys,os; m=json.load(sys.stdin); print(next(p['version'] for p in m['packages'] if p['name']==os.environ['C']))" C="$c")"
-            if curl -sf -o /dev/null "https://crates.io/api/v1/crates/$c/$VER"; then
+            # crates.io rejects requests without a real User-Agent (403), so set
+            # one; a 200 means this version already exists and we skip it.
+            if curl -sf -A "marg-publish-ci (https://github.com/SarthiAI/Marg)" -o /dev/null "https://crates.io/api/v1/crates/$c/$VER"; then
               echo "$c@$VER already published, skipping."
             else
               cargo publish -p "$c" --locked
