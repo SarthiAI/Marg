@@ -26,7 +26,7 @@ http = "1"
 http-body-util = "0.1"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream", "json", "http2"] }
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio-rustls", "chrono", "uuid", "macros", "migrate"] }
-redis = { version = "0.27", default-features = false, features = ["tokio-comp", "tokio-rustls-comp", "script"] }
+redis = { version = "0.27", default-features = false, features = ["tokio-comp", "tokio-rustls-comp", "script", "connection-manager"] }
 deadpool-redis = { version = "0.18", default-features = false, features = ["rt_tokio_1"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

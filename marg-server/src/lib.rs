@@ -83,15 +83,23 @@ pub async fn run(config_path: &str) -> anyhow::Result<()> {
         &cfg.inline_invariants,
     )
     .with_context(|| "loading kavach policy source")?;
-    let kavach_runtime = kavach::build_runtime(&cfg.kavach, &loaded_policy)
+    // Cluster mode turns on when a Redis hot store is configured: the gate
+    // gets the signed cross-node invalidation broadcaster (ADR-027) and the
+    // shared Redis session store. Single-node passes None and keeps the
+    // in-memory shapes.
+    let cluster_params = build_cluster_params(&cfg, metrics.clone())
+        .context("resolving cluster mode configuration")?;
+    let kavach_runtime = kavach::build_runtime(&cfg.kavach, &loaded_policy, cluster_params)
+        .await
         .with_context(|| "building kavach runtime")?;
 
     // Periodic disk flush. One JSONL file per process lifetime; cross-restart
     // chain merging is a v1.1 concern documented in docs/cluster-deployment.md.
     let flush_handle = kavach::spawn_audit_flush_task(
         kavach_runtime.audit_chain.clone(),
-        cfg.kavach.audit_export_path.clone(),
+        kavach_runtime.audit_export_file.clone(),
         cfg.kavach.audit_flush_seconds,
+        cfg.kavach.audit_max_resident_bytes,
     );
     tracing::info!(
         path = %flush_handle.path.display(),
@@ -116,6 +124,11 @@ pub async fn run(config_path: &str) -> anyhow::Result<()> {
     // SIGHUP triggers a policy reload (Kavach side + routing side, single
     // transactional swap). Mirrors POST /admin/policy/reload.
     install_sighup_reload(state.clone());
+
+    // Cluster mode: apply key invalidations broadcast by peer nodes. On a
+    // single-node deployment the broadcaster is the no-op variant whose
+    // subscription never yields, so this task idles harmlessly. (ADR-027)
+    let _invalidation_listener = kavach::spawn_remote_invalidation_listener(state.clone());
 
     admin::serve_admin(cfg.admin.clone(), state.clone())
         .await
@@ -225,6 +238,44 @@ async fn build_hot_store(cfg: &Config) -> anyhow::Result<Arc<dyn HotStore>> {
             ),
         },
     }
+}
+
+/// Resolve cluster-mode runtime parameters. Returns `Some` only when a Redis
+/// hot store is configured (`[storage.hot].backend = "redis"`), which is the
+/// signal that this Marg is part of a cluster. The node id comes from
+/// `[kavach.cluster].node_id` when set, otherwise a fresh random id is minted
+/// at boot (sufficient for correct self-skip on the invalidation channel).
+fn build_cluster_params(
+    cfg: &Config,
+    metrics: Arc<Metrics>,
+) -> anyhow::Result<Option<kavach::ClusterRuntimeParams>> {
+    let Some(hot) = &cfg.storage.hot else {
+        return Ok(None);
+    };
+    if hot.backend.as_str() != "redis" {
+        return Ok(None);
+    }
+    let url_ref = hot
+        .url
+        .as_deref()
+        .context("storage.hot.url must be set for the redis hot store (cluster mode)")?;
+    let redis_url = secret::resolve(url_ref)
+        .with_context(|| "resolving storage.hot.url secret reference for cluster mode")?;
+    let cc = &cfg.kavach.cluster;
+    let node_id = cc
+        .node_id
+        .clone()
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+    Ok(Some(kavach::ClusterRuntimeParams {
+        redis_url,
+        channel: cc.invalidation_channel.clone(),
+        node_id,
+        bridge_capacity: cc.bridge_capacity,
+        max_message_age_seconds: cc.max_message_age_seconds,
+        session_ttl_seconds: cc.session_ttl_seconds,
+        metrics,
+    }))
 }
 
 fn build_providers(cfg: &Config) -> anyhow::Result<ProviderRegistry> {

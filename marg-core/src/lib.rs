@@ -19,8 +19,8 @@ pub use config::{
 };
 pub use error::ConfigError;
 pub use kavach::{
-    load_kavach_policy, InvariantToml, KavachConfig, KavachDriftConfig, KavachPolicyFile,
-    LoadedKavachPolicy,
+    load_kavach_policy, InvariantToml, KavachClusterConfig, KavachConfig, KavachDriftConfig,
+    KavachPolicyFile, LoadedKavachPolicy,
 };
 pub use key::{KeyStatus, MargKey, MargToken, NewKey, TOKEN_PREFIX};
 pub use pricing::{ModelPrice, PricingTable};

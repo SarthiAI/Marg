@@ -6,18 +6,23 @@
 use anyhow::{anyhow, Context, Result};
 use arc_swap::ArcSwap;
 use async_trait::async_trait;
+use kavach_core::invalidation::InvalidationBroadcaster;
 use kavach_core::{
     ActionContext, BehaviorDrift, DeviceDrift, DriftDetector, DriftEvaluator, Evaluator, Gate,
     GateConfig, GeoLocationDrift, Invariant, InvariantSet, NoopInvalidationBroadcaster, Policy,
-    PolicyEngine, PolicySet, SessionAgeDrift, TokenSigner, Verdict,
+    PolicyEngine, PolicySet, SessionAgeDrift, SessionStore, TokenSigner, Verdict,
 };
 use kavach_pq::{PqTokenSigner, SignedAuditChain, Signer, Verifier};
+use kavach_redis::RedisSessionStore;
 use marg_core::{InvariantToml, KavachConfig, LoadedKavachPolicy};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use crate::kavach::keys::load_or_generate_keypair;
 use crate::kavach::session_store::MargSessionStore;
+use crate::kavach::{EnforceGatedBroadcaster, SignedRedisBroadcaster};
+use crate::metrics::Metrics;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KavachMode {
@@ -131,11 +136,21 @@ pub struct KavachRuntime {
     pub policy_engine: Arc<PolicyEngine>,
     pub invariants: Arc<SwappableInvariantSet>,
     pub audit_chain: Arc<SignedAuditChain>,
+    /// Per-process JSONL file the audit chain is flushed to. The flush task
+    /// appends to it; the admin audit handlers read it back and stitch it to
+    /// the in-memory tail to serve / verify the full chain after pruning.
+    pub audit_export_file: PathBuf,
     pub verifier: Verifier,
     pub mode: ArcSwap<KavachMode>,
     pub include_prompts: ArcSwap<bool>,
     pub expose_permit_to_caller: ArcSwap<bool>,
     pub forward_permit_to_provider: ArcSwap<bool>,
+    /// Whether the permit token signer was attached at boot (i.e. permits are
+    /// consumed and therefore signed). Immutable for the process lifetime: the
+    /// signer lives in the gate, which is not rebuilt on reload. Reload refuses
+    /// to enable `expose_permit_to_caller` / `forward_permit_to_provider` when
+    /// this is false, so an unsigned permit is never exposed or forwarded.
+    pub permit_signing_enabled: bool,
     pub permit_ttl_seconds: ArcSwap<u64>,
     pub policy_source_path: Option<PathBuf>,
     pub policy_source_hash: ArcSwap<String>,
@@ -146,8 +161,23 @@ pub struct KavachRuntime {
     pub permit_signer: PermitSignerState,
     pub drift_state: ArcSwap<DriftDetectorState>,
     pub drift_evaluator: Arc<SwappableDriftEvaluator>,
+    /// Whether the per-request session-store round-trip is needed: true when
+    /// drift detection is enabled OR a loaded policy uses a `session_age_max`
+    /// condition. When false, `action_context_from_request` synthesizes the
+    /// session from the request instead of hitting the store, eliminating the
+    /// per-request Redis round-trip (the dominant cluster-mode hot-path cost
+    /// when nothing consumes the session). Recomputed on reload.
+    pub session_tracking_needed: ArcSwap<bool>,
     pub session_store: Arc<MargSessionStore>,
     pub keypair_id: String,
+    /// The invalidation broadcaster wired into the gate. Cluster mode uses the
+    /// signed Redis broadcaster (ADR-027); single-node uses the no-op. Stored
+    /// here so the remote-apply listener can subscribe to it.
+    pub invalidation_broadcaster: Arc<dyn InvalidationBroadcaster>,
+    /// Shared enforce/observe flag the signed broadcaster reads so observe
+    /// mode never fans out a cluster-wide key drop. Flipped by policy reload
+    /// in lock-step with `mode`.
+    pub enforce_flag: Arc<AtomicBool>,
 }
 
 /// Observability snapshot of the permit signer wired into the gate. Surfaces
@@ -185,14 +215,33 @@ pub struct KavachReloadOutcome {
     pub source_path: Option<PathBuf>,
 }
 
+/// Parameters threaded into [`build_runtime`] when Marg boots clustered
+/// (`[storage.hot].backend = "redis"`). `None` at the call site means
+/// single-node: in-memory session store plus the no-op broadcaster, exactly
+/// the pre-cluster behaviour.
+pub struct ClusterRuntimeParams {
+    pub redis_url: String,
+    pub channel: String,
+    pub node_id: String,
+    pub bridge_capacity: usize,
+    pub max_message_age_seconds: i64,
+    pub session_ttl_seconds: Option<u64>,
+    pub metrics: Arc<Metrics>,
+}
+
 /// Build the runtime at boot. Empty policy in enforce mode is a fatal startup
 /// error (default-deny with zero rules refuses every request, which is almost
 /// certainly an operator mistake). Empty policy in observe mode is allowed
 /// (every request becomes a would-refuse event the operator can inspect via
 /// `marg policy audit`).
-pub fn build_runtime(
+///
+/// `cluster` is `Some` only when Marg runs with a Redis hot store. In that
+/// case the session store becomes the shared Redis store and the gate gets
+/// the signed cross-node invalidation broadcaster (ADR-027).
+pub async fn build_runtime(
     kavach_cfg: &KavachConfig,
     loaded: &LoadedKavachPolicy,
+    cluster: Option<ClusterRuntimeParams>,
 ) -> Result<Arc<KavachRuntime>> {
     let mode = KavachMode::from_config(kavach_cfg);
     if matches!(mode, KavachMode::Enforce) && loaded.policies.is_empty() {
@@ -237,14 +286,24 @@ pub fn build_runtime(
     // signature over `PermitToken::canonical_bytes()`. ADR-015 keeps the audit
     // chain and the permit signer on the *same* `KavachKeyPair` for v1.0; the
     // `permit_signer_hybrid` knob is the operator escape hatch.
+    // Only sign permits when the operator actually consumes them (exposes to
+    // the caller or forwards to the provider). A signed permit that is then
+    // discarded is a full ML-DSA-65 signature per request for no security
+    // benefit, so skip the signer entirely in the common default posture.
     let permit_hybrid = kavach_cfg.permit_hybrid();
-    let pq_token_signer: Arc<dyn TokenSigner> = if permit_hybrid {
-        Arc::new(PqTokenSigner::from_keypair_hybrid(&keypair))
+    let sign_permits =
+        kavach_cfg.expose_permit_to_caller || kavach_cfg.forward_permit_to_provider;
+    let pq_token_signer: Option<Arc<dyn TokenSigner>> = if sign_permits {
+        Some(if permit_hybrid {
+            Arc::new(PqTokenSigner::from_keypair_hybrid(&keypair))
+        } else {
+            Arc::new(PqTokenSigner::from_keypair_pq_only(&keypair))
+        })
     } else {
-        Arc::new(PqTokenSigner::from_keypair_pq_only(&keypair))
+        None
     };
     let permit_signer = PermitSignerState {
-        enabled: true,
+        enabled: sign_permits,
         algorithm: if permit_hybrid {
             "ml-dsa-65+ed25519"
         } else {
@@ -262,13 +321,89 @@ pub fn build_runtime(
         permit_ttl_seconds: kavach_cfg.permit_ttl_seconds,
         fail_open: false,
     };
-    let gate = Arc::new(
-        Gate::new(evaluators, gate_config)
-            .with_broadcaster(Arc::new(NoopInvalidationBroadcaster::new()))
-            .with_token_signer(pq_token_signer),
-    );
 
-    let session_store = Arc::new(MargSessionStore::in_memory());
+    // Shared enforce flag the signed broadcaster reads. The gate publishes on
+    // every Invalidate verdict regardless of mode, so observe mode is enforced
+    // at the broadcaster (no cluster-wide key drop while only observing).
+    let enforce_flag = Arc::new(AtomicBool::new(matches!(mode, KavachMode::Enforce)));
+
+    // Cluster mode swaps in the shared Redis session store and the signed
+    // cross-node invalidation broadcaster (ADR-027). Single-node keeps the
+    // in-memory store and the no-op broadcaster.
+    // `invalidation_broadcaster` is the unconditional signed broadcaster, used
+    // by the remote-apply listener (subscribe) and by admin-initiated kills
+    // (publish in any mode). `gate_broadcaster` is what the gate sees: in
+    // cluster mode it is an enforce-gated wrapper so drift / policy Invalidate
+    // verdicts only fan out in enforce mode. Both share the same Redis channel
+    // and local bridge.
+    let (invalidation_broadcaster, gate_broadcaster, session_store): (
+        Arc<dyn InvalidationBroadcaster>,
+        Arc<dyn InvalidationBroadcaster>,
+        Arc<MargSessionStore>,
+    ) = match cluster {
+        Some(c) => {
+            // Dedicated signer/verifier for the broadcaster, keyed on the same
+            // cluster keypair as the audit chain (ADR-027 key distribution).
+            let bcast_signer = Arc::new(Signer::from_keypair(&keypair, kavach_cfg.audit_hybrid));
+            let bcast_verifier = Arc::new(Verifier::from_bundle(
+                &keypair.public_keys(),
+                kavach_cfg.audit_hybrid,
+            ));
+            let broadcaster = SignedRedisBroadcaster::connect(
+                &c.redis_url,
+                c.channel.clone(),
+                c.node_id.clone(),
+                bcast_signer,
+                bcast_verifier,
+                c.bridge_capacity,
+                c.max_message_age_seconds,
+                c.metrics.clone(),
+            )
+            .await
+            .context("connecting signed cluster invalidation broadcaster")?;
+            let signed: Arc<dyn InvalidationBroadcaster> = Arc::new(broadcaster);
+            let gated: Arc<dyn InvalidationBroadcaster> = Arc::new(EnforceGatedBroadcaster::new(
+                signed.clone(),
+                enforce_flag.clone(),
+                c.metrics.clone(),
+            ));
+
+            let redis_sessions: Arc<dyn SessionStore> = match c.session_ttl_seconds {
+                Some(ttl) => Arc::new(
+                    RedisSessionStore::from_url_with_ttl(&c.redis_url, ttl)
+                        .await
+                        .map_err(|e| anyhow!("connecting redis session store: {e}"))?,
+                ),
+                None => Arc::new(
+                    RedisSessionStore::from_url(&c.redis_url)
+                        .await
+                        .map_err(|e| anyhow!("connecting redis session store: {e}"))?,
+                ),
+            };
+
+            tracing::info!(
+                node_id = %c.node_id,
+                channel = %c.channel,
+                "kavach cluster mode active: signed invalidation broadcaster + shared redis session store"
+            );
+
+            (
+                signed,
+                gated,
+                Arc::new(MargSessionStore::from_inner(redis_sessions, "redis")),
+            )
+        }
+        None => {
+            let noop: Arc<dyn InvalidationBroadcaster> = Arc::new(NoopInvalidationBroadcaster::new());
+            (noop.clone(), noop, Arc::new(MargSessionStore::in_memory()))
+        }
+    };
+
+    let gate_base = Gate::new(evaluators, gate_config).with_broadcaster(gate_broadcaster);
+    let gate = Arc::new(match pq_token_signer {
+        Some(signer) => gate_base.with_token_signer(signer),
+        None => gate_base,
+    });
 
     tracing::info!(
         mode = mode.as_str(),
@@ -286,16 +421,21 @@ pub fn build_runtime(
         "kavach runtime ready"
     );
 
+    let audit_export_file = super::flush::chain_file_path(&kavach_cfg.audit_export_path);
+    let session_tracking = drift_state.enabled || loaded.references_session();
+
     Ok(Arc::new(KavachRuntime {
         gate,
         policy_engine,
         invariants,
         audit_chain,
+        audit_export_file,
         verifier,
         mode: ArcSwap::from_pointee(mode),
         include_prompts: ArcSwap::from_pointee(kavach_cfg.include_prompts),
         expose_permit_to_caller: ArcSwap::from_pointee(kavach_cfg.expose_permit_to_caller),
         forward_permit_to_provider: ArcSwap::from_pointee(kavach_cfg.forward_permit_to_provider),
+        permit_signing_enabled: sign_permits,
         permit_ttl_seconds: ArcSwap::from_pointee(kavach_cfg.permit_ttl_seconds),
         policy_source_path: loaded.source_path.clone(),
         policy_source_hash: ArcSwap::from_pointee(loaded.source_hash.clone()),
@@ -306,8 +446,11 @@ pub fn build_runtime(
         permit_signer,
         drift_state: ArcSwap::from_pointee(drift_state),
         drift_evaluator,
+        session_tracking_needed: ArcSwap::from_pointee(session_tracking),
         session_store,
         keypair_id: keypair.id.clone(),
+        invalidation_broadcaster,
+        enforce_flag,
     }))
 }
 
@@ -425,19 +568,41 @@ pub fn reload_policy(
     // malformed knob (default-deny on partial config).
     let (drift_state, drift_inner) =
         build_drift_evaluator(kavach_cfg).context("rebuilding drift evaluator on reload")?;
+    let session_tracking = drift_state.enabled || loaded.references_session();
     runtime.drift_evaluator.store(drift_inner);
     runtime.drift_state.store(Arc::new(drift_state));
+    runtime
+        .session_tracking_needed
+        .store(Arc::new(session_tracking));
 
     runtime.mode.store(Arc::new(new_mode));
+    // Keep the signed broadcaster's enforce gate in lock-step with the mode so
+    // a reload that flips observe->enforce also starts fanning out cluster
+    // invalidations (and enforce->observe stops them). ADR-027.
+    runtime
+        .enforce_flag
+        .store(matches!(new_mode, KavachMode::Enforce), Ordering::Relaxed);
     runtime
         .include_prompts
         .store(Arc::new(kavach_cfg.include_prompts));
-    runtime
-        .expose_permit_to_caller
-        .store(Arc::new(kavach_cfg.expose_permit_to_caller));
-    runtime
-        .forward_permit_to_provider
-        .store(Arc::new(kavach_cfg.forward_permit_to_provider));
+    // Permits are only signed when the signer was attached at boot. Refuse to
+    // enable exposure/forwarding on reload without it, so an unsigned permit is
+    // never handed out; enabling it requires a restart.
+    if (kavach_cfg.expose_permit_to_caller || kavach_cfg.forward_permit_to_provider)
+        && !runtime.permit_signing_enabled
+    {
+        tracing::warn!(
+            "reload requested expose/forward permit but permit signing was not enabled at boot; \
+             permits are unsigned so exposure/forwarding stays off. Restart with \
+             expose_permit_to_caller or forward_permit_to_provider set to activate signed permits."
+        );
+    }
+    runtime.expose_permit_to_caller.store(Arc::new(
+        kavach_cfg.expose_permit_to_caller && runtime.permit_signing_enabled,
+    ));
+    runtime.forward_permit_to_provider.store(Arc::new(
+        kavach_cfg.forward_permit_to_provider && runtime.permit_signing_enabled,
+    ));
     runtime
         .permit_ttl_seconds
         .store(Arc::new(kavach_cfg.permit_ttl_seconds));

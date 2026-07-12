@@ -65,6 +65,25 @@ docker run -d --name marg -p 8080:8080 -p 8081:8081 \
 Multi-arch images (`linux/amd64` and `linux/arm64`) are published to
 Docker Hub at `sarthiai/marg` on every release.
 
+### Cluster mode (multiple nodes)
+
+To run several nodes that share state, point each container at an external
+Redis and Postgres and mount the same Kavach keypair on every node:
+
+```bash
+docker run -d --name marg-node-1 -p 8080:8080 -p 8081:8081 \
+  -e MARG_PG_DSN="postgres://..." \
+  -e MARG_REDIS_URL="redis://..." \
+  -v /etc/marg:/etc/marg \
+  sarthiai/marg:latest
+```
+
+The Redis hot store is the signal that turns on cluster behaviour: shared
+rate limits and budgets, shared Kavach session state, and signed cross-node
+key invalidation (ADR-027). Every node must use the same Kavach keypair and
+the same invalidation channel. See [`cluster-deployment.md`](cluster-deployment.md)
+for the full configuration, threat model, and operational notes.
+
 ## `marg init` (manual install)
 
 If a release archive is already on disk (air-gapped, vendored, or built

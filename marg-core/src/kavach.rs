@@ -52,6 +52,14 @@ pub struct KavachConfig {
     #[serde(default = "default_audit_flush_seconds")]
     pub audit_flush_seconds: u64,
 
+    /// Upper bound on the signed audit chain's in-memory footprint. The flush
+    /// task persists and prunes the resident window as soon as its estimated
+    /// heap size crosses this, independent of `audit_flush_seconds`, so peak
+    /// memory stays bounded regardless of request rate. Default 64 MiB. Set 0
+    /// to disable the size trigger and flush on the time interval only.
+    #[serde(default = "default_audit_max_resident_bytes")]
+    pub audit_max_resident_bytes: u64,
+
     /// `true` (default) signs every audit entry with ML-DSA-65 + Ed25519
     /// (hybrid). `false` signs with ML-DSA-65 only. ChainMode is fixed at
     /// chain construction and enforced by Kavach's verifier; flipping this
@@ -93,12 +101,19 @@ pub struct KavachConfig {
     /// Drift-detector tuning. Empty means every detector stays inert.
     #[serde(default)]
     pub drift: KavachDriftConfig,
+
+    /// Cluster-mode tuning. Active only when `[storage.hot].backend =
+    /// "redis"`. On a single-node deployment every field here is inert.
+    /// See ADR-027 for the signed invalidation channel.
+    #[serde(default)]
+    pub cluster: KavachClusterConfig,
 }
 
 fn default_mode() -> String { "observe".to_string() }
 fn default_keypair_path() -> String { "/etc/marg/marg.key".to_string() }
 fn default_audit_export_path() -> String { "/var/lib/marg/audit/".to_string() }
 fn default_audit_flush_seconds() -> u64 { 60 }
+fn default_audit_max_resident_bytes() -> u64 { 64 * 1024 * 1024 }
 fn default_audit_hybrid() -> bool { true }
 fn default_permit_ttl_seconds() -> u64 { 30 }
 
@@ -110,6 +125,7 @@ impl Default for KavachConfig {
             keypair_path: default_keypair_path(),
             audit_export_path: default_audit_export_path(),
             audit_flush_seconds: default_audit_flush_seconds(),
+            audit_max_resident_bytes: default_audit_max_resident_bytes(),
             audit_hybrid: default_audit_hybrid(),
             include_prompts: false,
             expose_permit_to_caller: false,
@@ -117,6 +133,61 @@ impl Default for KavachConfig {
             permit_ttl_seconds: default_permit_ttl_seconds(),
             permit_signer_hybrid: None,
             drift: KavachDriftConfig::default(),
+            cluster: KavachClusterConfig::default(),
+        }
+    }
+}
+
+/// `[kavach.cluster]` block. Tunes the cross-node behaviour that turns on
+/// when Marg runs clustered (`[storage.hot].backend = "redis"`). On a
+/// single-node deployment these are never read. See ADR-027: cluster key
+/// invalidation is carried as ML-DSA-65 signed messages, not plaintext
+/// Redis Pub/Sub.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct KavachClusterConfig {
+    /// Redis Pub/Sub channel the signed invalidation messages travel on.
+    /// Every Marg node in one cluster must use the same channel.
+    #[serde(default = "default_cluster_invalidation_channel")]
+    pub invalidation_channel: String,
+
+    /// Stable identifier for this node, used so a node ignores the echo of
+    /// its own broadcasts. When unset a random id is generated at boot,
+    /// which is sufficient for correct self-skip behaviour.
+    #[serde(default)]
+    pub node_id: Option<String>,
+
+    /// Capacity of the in-process bridge that hands received invalidations
+    /// to the local apply task. Sized to absorb a burst without lagging.
+    #[serde(default = "default_cluster_bridge_capacity")]
+    pub bridge_capacity: usize,
+
+    /// Received invalidations whose signed timestamp is older than this many
+    /// seconds are rejected as stale, bounding the replay window. Generous
+    /// by default to tolerate clock skew across nodes.
+    #[serde(default = "default_cluster_max_message_age_seconds")]
+    pub max_message_age_seconds: i64,
+
+    /// Optional TTL (seconds) applied to Redis-backed session state. When
+    /// unset, session rows persist until Redis evicts or Marg deletes them.
+    #[serde(default)]
+    pub session_ttl_seconds: Option<u64>,
+}
+
+fn default_cluster_invalidation_channel() -> String {
+    "marg:kavach:invalidation".to_string()
+}
+fn default_cluster_bridge_capacity() -> usize { 1024 }
+fn default_cluster_max_message_age_seconds() -> i64 { 30 }
+
+impl Default for KavachClusterConfig {
+    fn default() -> Self {
+        Self {
+            invalidation_channel: default_cluster_invalidation_channel(),
+            node_id: None,
+            bridge_capacity: default_cluster_bridge_capacity(),
+            max_message_age_seconds: default_cluster_max_message_age_seconds(),
+            session_ttl_seconds: None,
         }
     }
 }
@@ -264,6 +335,25 @@ impl LoadedKavachPolicy {
             toml::Value::Array(self.policies.clone()),
         );
         toml::to_string(&toml::Value::Table(table)).unwrap_or_default()
+    }
+
+    /// Whether any loaded policy references the session, i.e. carries a
+    /// `session_age_max` condition (the only session-dependent condition in
+    /// the Kavach vocabulary). Marg combines this with drift-detector state to
+    /// decide whether the per-request session-store round-trip is needed at
+    /// all: when neither drift nor a session-age policy consumes the session,
+    /// the store lookup is pure per-request cost and is skipped.
+    pub fn references_session(&self) -> bool {
+        self.policies.iter().any(|p| {
+            p.get("conditions")
+                .and_then(|c| c.as_array())
+                .is_some_and(|conds| {
+                    conds.iter().any(|cond| {
+                        cond.as_table()
+                            .is_some_and(|t| t.contains_key("session_age_max"))
+                    })
+                })
+        })
     }
 }
 

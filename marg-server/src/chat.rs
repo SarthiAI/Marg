@@ -67,6 +67,7 @@ pub async fn chat_completions(
         estimated_cost_for_gate,
         caller_headers,
         &state.kavach.session_store,
+        *state.kavach.session_tracking_needed.load_full(),
     )
     .await;
     let real_verdict = state.kavach.gate.evaluate(&ctx).await;

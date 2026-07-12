@@ -247,6 +247,12 @@ audit_export_path = "/var/lib/marg/audit/"
 # crash-loss bound at one minute of traffic.
 audit_flush_seconds = 60
 
+# Upper bound on the audit chain's in-memory footprint. Once the resident window
+# crosses this, it is flushed to disk and pruned from memory immediately,
+# regardless of audit_flush_seconds, so peak RAM stays bounded no matter the
+# request rate. Default 64 MiB. Set 0 to flush on the time interval only.
+audit_max_resident_bytes = 67108864
+
 # true (default) signs every entry with ML-DSA-65 + Ed25519 hybrid.
 # false signs ML-DSA-65 only (smaller signatures, slightly faster).
 audit_hybrid = true
@@ -258,6 +264,14 @@ include_prompts = false
 
 # Surface the signed PermitToken to the caller in `X-Kavach-Permit` so
 # downstream tools can verify it. Default off.
+#
+# Performance note: the per-request post-quantum permit signature is only
+# computed when at least one of expose_permit_to_caller / forward_permit_to_provider
+# is on. In the default posture (both off) permits are not signed at all, which
+# roughly matches observe-mode throughput. Because the signer is wired at boot,
+# turning either of these on takes effect on restart, not on a live policy
+# reload (a reload that enables them without a restart is refused with a warning,
+# so an unsigned permit is never exposed).
 expose_permit_to_caller = false
 
 # Forward the same `X-Kavach-Permit` header to the upstream provider call.
@@ -300,6 +314,39 @@ permit_ttl_seconds = 30
 # `_violation`. The pair `(warn, violation)` must be strictly increasing.
 # behavior_rate_warn = 100
 # behavior_rate_violation = 500
+
+# ----------------------------------------------------------------------------
+# Cluster mode. These knobs are read ONLY when a Redis hot store is
+# configured ([storage.hot].backend = "redis"); that is the signal that this
+# Marg is one node in a cluster. On a single-node deployment the whole
+# [kavach.cluster] block is inert and can be omitted.
+#
+# When clustered, a key killed on one node (drift or admin action) is
+# broadcast to every other node so the key is dropped fleet-wide in well
+# under a second. Those messages are ML-DSA-65 SIGNED by the cluster keypair
+# and verified on receipt, so an attacker on your Redis network cannot forge
+# a "kill key X" message (see ADR-027 / docs/cluster-deployment.md). Still run
+# Redis with TLS + AUTH + network isolation as defence in depth.
+[kavach.cluster]
+# Redis Pub/Sub channel the signed invalidation messages travel on. Every
+# node in one cluster MUST use the same channel name.
+# invalidation_channel = "marg:kavach:invalidation"
+#
+# Stable id for this node, used so a node ignores the echo of its own
+# broadcasts. Leave unset to mint a random id at boot (correct, but a stable
+# value is nicer in logs). Give each node a distinct value if you set it.
+# node_id = "marg-node-1"
+#
+# In-process buffer for received invalidations waiting to be applied locally.
+# bridge_capacity = 1024
+#
+# Reject received invalidations whose signed timestamp is older than this many
+# seconds (replay bound). Raise it if your nodes have loose clock sync.
+# max_message_age_seconds = 30
+#
+# Optional TTL (seconds) for the shared Redis session state. Unset means
+# session rows live until Redis evicts them or Marg deletes them.
+# session_ttl_seconds = 86400
 
 # ----------------------------------------------------------------------------
 # Inline policy / invariants for dev only. PRODUCTION should set

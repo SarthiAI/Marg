@@ -8,6 +8,7 @@
 
 mod context;
 mod flush;
+mod invalidation;
 mod keys;
 mod lifecycle;
 mod runtime;
@@ -16,6 +17,10 @@ mod sink;
 
 pub use context::{action_context_from_request, parse_caller_headers, RequestLifecycle};
 pub use flush::{spawn_audit_flush_task, AuditFlushTaskHandle};
+pub use invalidation::{
+    cluster_invalidation_scope, spawn_remote_invalidation_listener, EnforceGatedBroadcaster,
+    SignedRedisBroadcaster,
+};
 pub use keys::{load_or_generate_keypair, MargKavachKeyFile};
 pub use lifecycle::{
     audit_request_lifecycle, emit_key_event, emit_policy_reload, encode_permit_header,
@@ -23,8 +28,8 @@ pub use lifecycle::{
 };
 pub use runtime::{
     build_drift_evaluator, build_invariant_set, build_policy_set, build_runtime, reload_policy,
-    DriftDetectorEntry, DriftDetectorState, KavachMode, KavachReloadOutcome, KavachRuntime,
-    PermitSignerState, SwappableDriftEvaluator, SwappableInvariantSet,
+    ClusterRuntimeParams, DriftDetectorEntry, DriftDetectorState, KavachMode, KavachReloadOutcome,
+    KavachRuntime, PermitSignerState, SwappableDriftEvaluator, SwappableInvariantSet,
 };
 pub use session_store::{CallerHeaders, MargSessionStore};
 pub use sink::SignedChainSink;

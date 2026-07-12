@@ -24,6 +24,7 @@ pub struct Metrics {
     pub write_batcher_flushes_total: IntCounterVec,
     pub write_batcher_rows_total: IntCounterVec,
     pub write_batcher_overflow_total: IntCounter,
+    pub cluster_invalidations_total: IntCounterVec,
 }
 
 impl Metrics {
@@ -165,6 +166,15 @@ impl Metrics {
         ))
         .expect("valid metric definition: marg_write_batcher_overflow_total");
 
+        let cluster_invalidations_total = IntCounterVec::new(
+            Opts::new(
+                "marg_cluster_invalidations_total",
+                "Signed cluster key-invalidation messages by direction (published|received) and result (ok|suppressed|rejected).",
+            ),
+            &["direction", "result"],
+        )
+        .expect("valid metric definition: marg_cluster_invalidations_total");
+
         registry
             .register(Box::new(requests_total.clone()))
             .expect("register requests_total");
@@ -207,6 +217,9 @@ impl Metrics {
         registry
             .register(Box::new(write_batcher_overflow_total.clone()))
             .expect("register write_batcher_overflow_total");
+        registry
+            .register(Box::new(cluster_invalidations_total.clone()))
+            .expect("register cluster_invalidations_total");
 
         #[cfg(target_os = "linux")]
         {
@@ -231,7 +244,17 @@ impl Metrics {
             write_batcher_flushes_total,
             write_batcher_rows_total,
             write_batcher_overflow_total,
+            cluster_invalidations_total,
         })
+    }
+
+    /// Count a cluster key-invalidation event. `direction` is `published` or
+    /// `received`; `result` is `ok`, `suppressed` (observe mode), or
+    /// `rejected` (failed verification / stale / undecodable).
+    pub fn record_cluster_invalidation(&self, direction: &str, result: &str) {
+        self.cluster_invalidations_total
+            .with_label_values(&[direction, result])
+            .inc();
     }
 
     pub fn record_request(&self, provider: &str, model: &str, status: u16, duration_seconds: f64) {

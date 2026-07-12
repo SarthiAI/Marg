@@ -7,7 +7,7 @@ use std::str::FromStr;
 use marg_core::{BudgetSpec, MargKey, MargToken, NewKey, PrincipalKind};
 
 use crate::admin::error::AdminError;
-use crate::kavach::{emit_key_event, KeyEventKind};
+use crate::kavach::{cluster_invalidation_scope, emit_key_event, KeyEventKind};
 use crate::state::AppState;
 
 #[derive(Debug, Deserialize)]
@@ -126,6 +126,7 @@ pub async fn revoke(
     }
     state.metrics.clear_budget_remaining(&id);
     state.key_cache.invalidate_all();
+    broadcast_admin_kill(&state, &id, "admin revoke").await;
     emit_key_event(
         &state.kavach.audit_chain,
         "admin",
@@ -146,9 +147,7 @@ pub async fn invalidate(
         .await
         .map_err(|e| AdminError::Storage(e.to_string()))?;
     state.key_cache.invalidate_all();
-    // P09 ships single-node invalidation only; cluster broadcast lands in P10
-    // when kavach-redis joins the workspace and the broadcaster swaps from
-    // Noop to RedisInvalidationBroadcaster.
+    broadcast_admin_kill(&state, &id, "admin invalidate").await;
     emit_key_event(
         &state.kavach.audit_chain,
         "admin",
@@ -157,4 +156,22 @@ pub async fn invalidate(
         Some("admin invalidate"),
     );
     Ok(Json(json!({ "id": id, "invalidated": true })))
+}
+
+/// Broadcast an admin-initiated key kill (revoke or invalidate) to peer nodes
+/// (ADR-027). Best-effort and unconditional: a deliberate operator action
+/// should drop the key on every node in any mode, so this goes through the
+/// raw signed broadcaster (not the enforce-gated gate path). A publish failure
+/// is logged, never fatal to the admin call. On a single-node deployment the
+/// broadcaster is the no-op and this is a cheap no-op.
+async fn broadcast_admin_kill(state: &AppState, key_id: &str, reason: &str) {
+    let scope = cluster_invalidation_scope(key_id, reason);
+    if let Err(e) = state.kavach.invalidation_broadcaster.publish(scope).await {
+        tracing::warn!(
+            ?e,
+            key_id = %key_id,
+            reason = %reason,
+            "cluster invalidation broadcast failed on admin kill"
+        );
+    }
 }

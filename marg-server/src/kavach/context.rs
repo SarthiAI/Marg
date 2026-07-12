@@ -106,6 +106,7 @@ pub async fn action_context_from_request(
     estimated_cost_usd: f64,
     headers: CallerHeaders,
     session_store: &Arc<MargSessionStore>,
+    session_tracking: bool,
 ) -> ActionContext {
     let action_name = action_name_for(&req.model);
 
@@ -130,31 +131,51 @@ pub async fn action_context_from_request(
 
     let session_id = derive_session_id(&key.id);
     let environment = headers.into_env();
-    let session = match session_store
-        .lookup_or_create_session(session_id, key.created_at, &environment)
-        .await
-    {
-        Ok(s) => s,
-        Err(err) => {
-            // Fail-closed on session store outage by handing the gate a
-            // *fresh* invalidated session: drift detectors that compare
-            // origin-vs-current cannot compare, but the gate will refuse
-            // because `session.invalidated == true`.
-            tracing::error!(
-                ?err,
-                key_id = %key.id,
-                "session store unavailable; falling back to invalidated session row"
-            );
-            SessionState {
-                session_id,
-                started_at: Utc::now(),
-                action_count: 0,
-                action_history: Vec::new(),
-                invalidated: true,
-                origin_ip: environment.ip,
-                origin_device: environment.device.clone(),
-                origin_geo: environment.geo.clone(),
+    let session = if session_tracking {
+        match session_store
+            .lookup_or_create_session(session_id, key.created_at, &environment)
+            .await
+        {
+            Ok(s) => s,
+            Err(err) => {
+                // Fail-closed on session store outage by handing the gate a
+                // *fresh* invalidated session: drift detectors that compare
+                // origin-vs-current cannot compare, but the gate will refuse
+                // because `session.invalidated == true`.
+                tracing::error!(
+                    ?err,
+                    key_id = %key.id,
+                    "session store unavailable; falling back to invalidated session row"
+                );
+                SessionState {
+                    session_id,
+                    started_at: Utc::now(),
+                    action_count: 0,
+                    action_history: Vec::new(),
+                    invalidated: true,
+                    origin_ip: environment.ip,
+                    origin_device: environment.device.clone(),
+                    origin_geo: environment.geo.clone(),
+                }
             }
+        }
+    } else {
+        // Nothing consumes the session this request (no drift detectors, no
+        // session-age policy condition), so the session-store round-trip is
+        // pure per-request cost. Synthesize a live, non-invalidated session
+        // from the request instead. This is what removes the dominant
+        // cluster-mode hot-path Redis op. Fail-closed is unaffected: this
+        // request genuinely depends on nothing in the session store, and the
+        // hot store still fails closed for any limited key that needs it.
+        SessionState {
+            session_id,
+            started_at: key.created_at,
+            action_count: 0,
+            action_history: Vec::new(),
+            invalidated: false,
+            origin_ip: environment.ip,
+            origin_device: environment.device.clone(),
+            origin_geo: environment.geo.clone(),
         }
     };
 

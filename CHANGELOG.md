@@ -4,6 +4,32 @@ All notable changes to Marg are documented in this file. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), versioning
 follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased] - cluster line
+
+First cluster-capable work, landing ahead of the cluster release (version
+chosen at cluster-release time per ADR-020). The 0.1.x line stays
+single-server; this is the multi-node groundwork.
+
+### Added
+
+- Cluster mode, enabled automatically when a Redis hot store is configured
+  (`[storage.hot].backend = "redis"`). Multiple Marg nodes behind a load
+  balancer share rate limits, budgets, and Kavach session state, and a key
+  killed on one node is dropped fleet-wide in under a second.
+- Signed cross-node key invalidation (ADR-027). Invalidation messages are
+  ML-DSA-65 signed (hybrid with Ed25519) by the cluster keypair and verified
+  on receipt, so a forged "kill key" message published to Redis is rejected.
+  The channel is signed, not encrypted: the payload is a key id, not a secret.
+  Both automatic kills (drift / policy Invalidate verdicts) and operator kills
+  (admin `invalidate` / `revoke`) propagate cluster-wide. Drift / policy
+  broadcasts respect mode (observe never fans out); a deliberate admin kill
+  fires in any mode.
+- New `[kavach.cluster]` config block (channel, node id, replay window,
+  session TTL) and a `marg_cluster_invalidations_total` metric
+  (labels `direction`, `result`).
+- `docs/cluster-deployment.md` rewritten from a stub into a full operator
+  guide; `docs/install.md` gains a Docker cluster recipe.
+
 ## [0.1.2] - unreleased
 
 Hotfix release. The 0.1.0 and 0.1.1 Docker image was unstartable on

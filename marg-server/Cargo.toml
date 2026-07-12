@@ -40,6 +40,8 @@ toml = { workspace = true }
 sha2 = { workspace = true }
 kavach-core = { workspace = true }
 kavach-pq = { workspace = true }
+kavach-redis = { workspace = true }
+redis = { workspace = true }
 
 [lints]
 workspace = true

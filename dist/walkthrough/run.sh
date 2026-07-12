@@ -42,6 +42,7 @@ SCENARIOS=(
   "14-hot-reload"
   "15-mode-flip"
   "16-bench-repass"
+  "17-cluster-invalidation"
 )
 
 FILTER="${1:-}"
