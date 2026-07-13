@@ -143,6 +143,10 @@ pub struct KavachRuntime {
     pub verifier: Verifier,
     pub mode: ArcSwap<KavachMode>,
     pub include_prompts: ArcSwap<bool>,
+    /// Embed-only. When a host registers a post-response content hook, whether
+    /// that hook runs on streamed responses (buffering the stream) or is
+    /// skipped so streaming is preserved. Default false. See ADR-031 section 6.
+    pub buffer_streaming_for_post_hook: bool,
     pub expose_permit_to_caller: ArcSwap<bool>,
     pub forward_permit_to_provider: ArcSwap<bool>,
     /// Whether the permit token signer was attached at boot (i.e. permits are
@@ -242,6 +246,7 @@ pub async fn build_runtime(
     kavach_cfg: &KavachConfig,
     loaded: &LoadedKavachPolicy,
     cluster: Option<ClusterRuntimeParams>,
+    injected_chain: Option<Arc<SignedAuditChain>>,
 ) -> Result<Arc<KavachRuntime>> {
     let mode = KavachMode::from_config(kavach_cfg);
     if matches!(mode, KavachMode::Enforce) && loaded.policies.is_empty() {
@@ -253,10 +258,24 @@ pub async fn build_runtime(
 
     let keypair = load_or_generate_keypair(&kavach_cfg.keypair_path)
         .context("loading or generating kavach signing keypair")?;
-    let signer = Signer::from_keypair(&keypair, kavach_cfg.audit_hybrid);
     let verifier = Verifier::from_bundle(&keypair.public_keys(), kavach_cfg.audit_hybrid);
 
-    let audit_chain = Arc::new(SignedAuditChain::new(signer));
+    // Audit chain: use the host-injected shared chain when embedding (ADR-031),
+    // so Marg's verdict + request entries land in the host's one chain and are
+    // exported/verified alongside the host's other planes. The injected chain
+    // must derive from the same keypair (shared via `[kavach].keypair_path`)
+    // so permits and audit entries verify under one bundle. When not injected,
+    // create the process-local chain exactly as before. The gate is built
+    // without `with_audit` (ADR-015): Marg appends one entry per request
+    // explicitly to `audit_chain`, so injecting it here is sufficient; there is
+    // no separate gate sink to redirect.
+    let audit_chain = match injected_chain {
+        Some(chain) => chain,
+        None => {
+            let signer = Signer::from_keypair(&keypair, kavach_cfg.audit_hybrid);
+            Arc::new(SignedAuditChain::new(signer))
+        }
+    };
 
     let policy_set = build_policy_set(&loaded.policies)
         .context("compiling kavach policy set from policy file")?;
@@ -433,6 +452,7 @@ pub async fn build_runtime(
         verifier,
         mode: ArcSwap::from_pointee(mode),
         include_prompts: ArcSwap::from_pointee(kavach_cfg.include_prompts),
+        buffer_streaming_for_post_hook: kavach_cfg.buffer_streaming_for_post_hook,
         expose_permit_to_caller: ArcSwap::from_pointee(kavach_cfg.expose_permit_to_caller),
         forward_permit_to_provider: ArcSwap::from_pointee(kavach_cfg.forward_permit_to_provider),
         permit_signing_enabled: sign_permits,

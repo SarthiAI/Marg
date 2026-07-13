@@ -11,6 +11,7 @@ use marg_core::{
 use marg_providers::ChatCompletionsClient;
 use marg_storage::{HotStore, Storage};
 
+use crate::hooks::{RequestContentHook, ResponseContentHook};
 use crate::kavach::KavachRuntime;
 use crate::metrics::Metrics;
 use crate::write_batcher::WriteBatcher;
@@ -32,6 +33,12 @@ pub struct AppState {
     pub write_batcher: Arc<WriteBatcher>,
     pub config_path: Arc<String>,
     pub kavach: Arc<KavachRuntime>,
+    /// Optional host-registered content hooks (embeddable gateway API,
+    /// ADR-031). `None` on the standalone `run()` path and any library use
+    /// that does not register them, in which case the chat pipeline behaves
+    /// exactly as it did before this API existed.
+    pub pre_hook: Option<Arc<dyn RequestContentHook>>,
+    pub post_hook: Option<Arc<dyn ResponseContentHook>>,
 }
 
 #[derive(Clone, Debug)]
@@ -82,7 +89,21 @@ impl AppState {
             write_batcher,
             config_path: Arc::new(config_path),
             kavach,
+            pre_hook: None,
+            post_hook: None,
         }
+    }
+
+    /// Attach host-registered content hooks. Used by `GatewayBuilder`; the
+    /// standalone `run()` path never calls this, so its hooks stay `None`.
+    pub(crate) fn with_content_hooks(
+        mut self,
+        pre_hook: Option<Arc<dyn RequestContentHook>>,
+        post_hook: Option<Arc<dyn ResponseContentHook>>,
+    ) -> Self {
+        self.pre_hook = pre_hook;
+        self.post_hook = post_hook;
+        self
     }
 }
 

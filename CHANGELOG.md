@@ -4,6 +4,48 @@ All notable changes to Marg are documented in this file. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), versioning
 follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.4] - 2026-07-13
+
+Additive library API so `marg-server` can be embedded in another Rust binary
+as an in-process plane. Nothing about the standalone daemon changes; running
+`marg start` behaves exactly as before.
+
+### Added
+
+- Embeddable gateway API. `GatewayBuilder` assembles the full gateway from a
+  config without binding any socket or installing a signal handler, and
+  returns a `Gateway` with a mountable `router()` (plus `admin_router()`,
+  `kavach()`, and `reload()`). The host owns the listeners, signals, and
+  shutdown. `run()` is re-expressed on top of the builder, so there is one
+  assembly path and its behavior is unchanged.
+- Injectable shared audit chain. `GatewayBuilder::with_audit_chain(chain)`
+  makes Marg append its verdicts and request records to a host-owned
+  `kavach_pq::SignedAuditChain` instead of creating its own, so a host process
+  exports and verifies one chain. The chain shares Marg's trust root through
+  the existing `[kavach].keypair_path` (no keypair-injection API needed).
+- Generic content hooks. `with_pre_hook` and `with_post_hook` register
+  `RequestContentHook` / `ResponseContentHook` trait objects that run inside
+  the request pipeline (pre-hook before the gate and forwarding, post-hook on
+  the provider response) and return `Allow`, `AllowModified { body }`, or
+  `Reject { status, body }`. Marg applies the decision and stays agnostic to
+  any content system; a rejection is audited as `content_hook_rejected`. Hooks
+  are optional; with none registered the pipeline is byte-for-byte the same.
+- `[kavach].buffer_streaming_for_post_hook` (default `false`). Off keeps token
+  streaming and skips the post-hook on streamed responses; on buffers the
+  stream and runs the post-hook once at stream close. Embed-only; has no
+  effect on the standalone path or on non-streaming responses.
+- New embedding guide at [`docs/embedding.md`](docs/embedding.md) and a crate
+  README for `marg-server` covering the builder, hooks, shared chain, and the
+  `kavach-pq` version requirement.
+
+### Changed
+
+- Kavach dependency resolved uniformly to 0.1.4 across `kavach-core`,
+  `kavach-pq`, and `kavach-redis`. Because `with_audit_chain` puts
+  `kavach_pq::SignedAuditChain` in the public API, an embedding host must
+  resolve the same `kavach-pq` version this crate does (keep both on
+  compatible caret ranges so Cargo unifies them).
+
 ## [Unreleased] - cluster line
 
 First cluster-capable work, landing ahead of the cluster release (version

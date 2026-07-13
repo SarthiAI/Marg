@@ -449,9 +449,20 @@ sudo systemctl restart marg
 See `marg.toml.example` for the documented shape and
 [`docs/config-reference.md`](docs/config-reference.md) for every key.
 
+## Embed Marg in your own Rust service
+
+Most apps just point their OpenAI client at a running Marg and need nothing
+else. If instead you are building a Rust binary and want Marg's gateway to run
+inside your process (one binary, one shared audit trail, your own content
+checks around every call), `marg-server` exposes an additive library API:
+`GatewayBuilder` returns a mountable `Gateway` with no sockets bound, an
+injectable shared audit chain, and pre/post content hooks. Registering nothing
+gives the exact standalone behavior. See [`docs/embedding.md`](docs/embedding.md).
+
 ## Documentation
 
 - [`docs/install.md`](docs/install.md) install paths, upgrade, uninstall
+- [`docs/embedding.md`](docs/embedding.md) run the gateway in-process as a library
 - [`docs/config-reference.md`](docs/config-reference.md) every TOML section and key
 - [`docs/routing-policy.md`](docs/routing-policy.md) match, primary plus fallback, weighted split, hot reload
 - [`docs/kavach.md`](docs/kavach.md) policy file shape, drift detectors, audit chain
@@ -482,7 +493,7 @@ marg/
 ├── docker/Dockerfile         container image
 ├── marg-cli/                 binary entry point, marg command
 ├── marg-core/                core types, config loader, error definitions
-├── marg-server/              axum server, routes, write batcher, Kavach runtime
+├── marg-server/              axum server, routes, write batcher, Kavach runtime, embeddable gateway API
 ├── marg-storage/             storage trait, sqlite, postgres, redis backends
 ├── marg-providers/           provider adapter trait, clients
 ├── console/                  Marg Console UI sources (TypeScript + Vite)

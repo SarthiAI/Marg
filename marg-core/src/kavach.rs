@@ -73,6 +73,18 @@ pub struct KavachConfig {
     #[serde(default)]
     pub include_prompts: bool,
 
+    /// Embed-only. When a host registers a post-response content hook (see the
+    /// embeddable gateway API, ADR-031), this controls whether that hook runs
+    /// on streamed responses. Default `false`: streamed responses skip the
+    /// post-hook and stream through unchanged so token streaming is preserved.
+    /// When `true`, Marg buffers the streamed text, runs the post-hook once at
+    /// stream close, then releases or replaces it, trading streaming latency
+    /// for output coverage. Has no effect in the standalone `run()` path (no
+    /// hook is registered there) or on non-streaming responses (always
+    /// checked).
+    #[serde(default)]
+    pub buffer_streaming_for_post_hook: bool,
+
     /// If `true`, every permitted request includes an `X-Kavach-Permit`
     /// response header (base64-url of the signed `PermitToken` JSON) so the
     /// caller can pass the permit downstream. Default `false`.
@@ -128,6 +140,7 @@ impl Default for KavachConfig {
             audit_max_resident_bytes: default_audit_max_resident_bytes(),
             audit_hybrid: default_audit_hybrid(),
             include_prompts: false,
+            buffer_streaming_for_post_hook: false,
             expose_permit_to_caller: false,
             forward_permit_to_provider: false,
             permit_ttl_seconds: default_permit_ttl_seconds(),
