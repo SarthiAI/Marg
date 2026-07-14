@@ -37,13 +37,18 @@
 //! let app: axum::Router = my_router().merge(gateway.router());
 //! ```
 //!
+//! For a shared chain whose resident memory stays flat under sustained traffic,
+//! inject a `kavach_pq::ManagedAuditChain` via
+//! [`GatewayBuilder::with_managed_audit_chain`] instead: same contract, but the
+//! chain persists old entries through its own sink and prunes them from memory
+//! (ADR-032). Inject at most one of the two.
+//!
 //! The injected chain must derive from the same keypair named in the config's
 //! `[kavach].keypair_path`, so permits and audit entries share one trust
-//! bundle. Because [`GatewayBuilder::with_audit_chain`] puts
-//! `kavach_pq::SignedAuditChain` in this crate's public API, an embedding host
-//! must resolve the same `kavach-pq` version this crate does. See the
-//! [embedding guide] for the full hook contract, streaming behavior, and the
-//! shared audit chain.
+//! bundle. Because the injection methods put `kavach_pq` chain types in this
+//! crate's public API, an embedding host must resolve the same `kavach-pq`
+//! version this crate does. See the [embedding guide] for the full hook
+//! contract, streaming behavior, and the shared audit chain.
 //!
 //! [embedding guide]: https://github.com/SarthiAI/Marg/blob/main/docs/embedding.md
 
@@ -187,6 +192,7 @@ pub struct GatewayBuilder {
     config: Config,
     config_path: Option<String>,
     audit_chain: Option<Arc<kavach_pq::SignedAuditChain>>,
+    managed_audit_chain: Option<Arc<kavach_pq::ManagedAuditChain>>,
     pre_hook: Option<Arc<dyn RequestContentHook>>,
     post_hook: Option<Arc<dyn ResponseContentHook>>,
 }
@@ -200,6 +206,7 @@ impl GatewayBuilder {
             config,
             config_path: Some(path.to_string()),
             audit_chain: None,
+            managed_audit_chain: None,
             pre_hook: None,
             post_hook: None,
         })
@@ -213,6 +220,7 @@ impl GatewayBuilder {
             config,
             config_path: None,
             audit_chain: None,
+            managed_audit_chain: None,
             pre_hook: None,
             post_hook: None,
         }
@@ -226,6 +234,23 @@ impl GatewayBuilder {
     /// bundle. See ADR-031 section 5.
     pub fn with_audit_chain(mut self, chain: Arc<kavach_pq::SignedAuditChain>) -> Self {
         self.audit_chain = Some(chain);
+        self
+    }
+
+    /// Inject a host-owned **bounded** audit chain. Same contract as
+    /// [`with_audit_chain`](Self::with_audit_chain) (Marg appends every entry it
+    /// would normally write into THIS chain, and does not run its own disk
+    /// flush), except the chain is a `kavach_pq::ManagedAuditChain`, which
+    /// persists old entries through its own sink and prunes them from memory
+    /// under its `RetentionPolicy`. This keeps resident memory flat under
+    /// sustained gateway traffic, so an embedding host (Niyam) can share ONE
+    /// bounded chain across all its planes. The chain must derive from the same
+    /// keypair named in `[kavach].keypair_path` so permits and audit entries
+    /// share one trust bundle. Setting both this and
+    /// [`with_audit_chain`](Self::with_audit_chain) is rejected at
+    /// [`build`](Self::build). See ADR-032.
+    pub fn with_managed_audit_chain(mut self, chain: Arc<kavach_pq::ManagedAuditChain>) -> Self {
+        self.managed_audit_chain = Some(chain);
         self
     }
 
@@ -252,7 +277,21 @@ impl GatewayBuilder {
     /// spawned and owned by the returned `Gateway`.
     pub async fn build(self) -> anyhow::Result<Gateway> {
         let cfg = self.config;
-        let chain_injected = self.audit_chain.is_some();
+
+        // Resolve the injected audit chain (raw or managed). One chain per
+        // gateway: injecting both is a caller error (ADR-032).
+        let injected_chain = match (self.audit_chain, self.managed_audit_chain) {
+            (Some(_), Some(_)) => {
+                anyhow::bail!(
+                    "with_audit_chain and with_managed_audit_chain are mutually exclusive; \
+                     inject at most one audit chain"
+                )
+            }
+            (Some(raw), None) => Some(kavach::AuditChainHandle::Raw(raw)),
+            (None, Some(managed)) => Some(kavach::AuditChainHandle::Managed(managed)),
+            (None, None) => None,
+        };
+        let chain_injected = injected_chain.is_some();
 
         let metrics = Metrics::new();
 
@@ -293,28 +332,31 @@ impl GatewayBuilder {
         let cluster_params = build_cluster_params(&cfg, metrics.clone())
             .context("resolving cluster mode configuration")?;
         let kavach_runtime =
-            kavach::build_runtime(&cfg.kavach, &loaded_policy, cluster_params, self.audit_chain)
+            kavach::build_runtime(&cfg.kavach, &loaded_policy, cluster_params, injected_chain)
                 .await
                 .with_context(|| "building kavach runtime")?;
 
         // Periodic disk flush of the process-local chain. Skipped when the host
-        // injected its own chain: the host then owns export and persistence, so
-        // Marg must not also flush the shared chain to its own file.
-        let flush_handle = if chain_injected {
-            None
-        } else {
-            let handle = kavach::spawn_audit_flush_task(
-                kavach_runtime.audit_chain.clone(),
-                kavach_runtime.audit_export_file.clone(),
-                cfg.kavach.audit_flush_seconds,
-                cfg.kavach.audit_max_resident_bytes,
-            );
-            tracing::info!(
-                path = %handle.path.display(),
-                flush_seconds = cfg.kavach.audit_flush_seconds,
-                "kavach audit chain export file"
-            );
-            Some(handle)
+        // injected its own chain (raw: the host owns export/persistence; managed:
+        // the chain self-prunes through its own sink), so Marg never flushes a
+        // chain it does not own. Only the internally-created raw chain is flushed
+        // here, exactly as before.
+        let flush_handle = match (chain_injected, kavach_runtime.audit_chain.raw_arc()) {
+            (false, Some(raw)) => {
+                let handle = kavach::spawn_audit_flush_task(
+                    raw,
+                    kavach_runtime.audit_export_file.clone(),
+                    cfg.kavach.audit_flush_seconds,
+                    cfg.kavach.audit_max_resident_bytes,
+                );
+                tracing::info!(
+                    path = %handle.path.display(),
+                    flush_seconds = cfg.kavach.audit_flush_seconds,
+                    "kavach audit chain export file"
+                );
+                Some(handle)
+            }
+            _ => None,
         };
 
         let config_path = self.config_path.clone().unwrap_or_default();

@@ -72,7 +72,7 @@ version = "1.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "40c48f72fd53cd289104fc64099abca73db4166ad86ea0b4341abe65af83dadc"
 dependencies = [
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -83,7 +83,7 @@ checksum = "291e6a250ff86cd4a820112fb8898808a366d8f9f58ce16d1f538353ad55747d"
 dependencies = [
  "anstyle",
  "once_cell_polyfill",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -751,7 +751,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1387,9 +1387,9 @@ dependencies = [
 
 [[package]]
 name = "kavach-core"
-version = "0.1.4"
+version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "44884ef794e6c4aab2abac52cc5fff34ceef0b06c3fe4ac8a82013d491f0ef9d"
+checksum = "2ed88dc7a58a5026acf1f70eae4c49e5c8895e1c734f69df362c1e0870efd6f4"
 dependencies = [
  "arc-swap",
  "async-trait",
@@ -1406,9 +1406,9 @@ dependencies = [
 
 [[package]]
 name = "kavach-pq"
-version = "0.1.4"
+version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "884f0e50f000153e590558e2e5e4b1b3854107d7cb8900154633c6733b34e79f"
+checksum = "36732734826963f174baafaf67d56a78d86f8c2e3e2aae208560395dd56619d5"
 dependencies = [
  "async-trait",
  "chacha20poly1305",
@@ -1436,9 +1436,9 @@ dependencies = [
 
 [[package]]
 name = "kavach-redis"
-version = "0.1.4"
+version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4b94a06e85fe6c5d70d27f1c32fce170c82e39ea4d35d33662e39bc93ff4cd36"
+checksum = "df809a036bd403b3649e1d708e5f296ae3aa43b5ec4d9323507bd0daeb2b8423"
 dependencies = [
  "async-trait",
  "futures-util",
@@ -1557,7 +1557,7 @@ checksum = "112b39cec0b298b6c1999fee3e31427f74f676e4cb9879ed1a121b43661a4154"
 
 [[package]]
 name = "marg-cli"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "anyhow",
  "chrono",
@@ -1575,7 +1575,7 @@ dependencies = [
 
 [[package]]
 name = "marg-core"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "chrono",
  "data-encoding",
@@ -1592,7 +1592,7 @@ dependencies = [
 
 [[package]]
 name = "marg-providers"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "async-stream",
  "async-trait",
@@ -1616,7 +1616,7 @@ dependencies = [
 
 [[package]]
 name = "marg-server"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -1654,7 +1654,7 @@ dependencies = [
 
 [[package]]
 name = "marg-storage"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "async-trait",
  "chrono",
@@ -1784,7 +1784,7 @@ version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2742,7 +2742,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3a766e1110788c36f4fa1c2b71b387a7815aa65f88ce0229841826633d93723e"
 dependencies = [
  "libc",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

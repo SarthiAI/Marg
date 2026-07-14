@@ -6,6 +6,7 @@
 //! enforce) is a runtime flag, not a build flag, so the same binary can ship
 //! everywhere and operators promote to enforce after tuning the policy.
 
+mod audit_target;
 mod context;
 mod flush;
 mod invalidation;
@@ -15,6 +16,7 @@ mod runtime;
 mod session_store;
 mod sink;
 
+pub use audit_target::AuditChainHandle;
 pub use context::{action_context_from_request, parse_caller_headers, RequestLifecycle};
 pub use flush::{spawn_audit_flush_task, AuditFlushTaskHandle};
 pub use invalidation::{

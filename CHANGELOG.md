@@ -4,6 +4,28 @@ All notable changes to Marg are documented in this file. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), versioning
 follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.5] - 2026-07-14
+
+Additive follow-up to the embedding API: an embedding host can now inject a
+**bounded** audit chain so the shared chain's resident memory stays flat under
+sustained traffic. Nothing about the standalone daemon changes, and the
+existing raw-chain injection is untouched.
+
+### Added
+
+- `GatewayBuilder::with_managed_audit_chain(chain)` accepts a host-owned
+  `kavach_pq::ManagedAuditChain` (bounded audit memory) as an alternative to
+  `with_audit_chain`. Marg appends its verdicts and request records into it
+  exactly as with the raw chain, and does not flush it to disk (the managed
+  chain persists and prunes itself through its own sink and retention policy).
+  Injecting both a raw and a managed chain is rejected at `build()`.
+
+### Changed
+
+- `kavach-pq` (and the `kavach-core` / `kavach-redis` trio) floor raised to
+  `>=0.1.5, <0.2.0`; `ManagedAuditChain` lands in kavach 0.1.5. Standalone and
+  raw-chain-injection behavior is unchanged.
+
 ## [0.1.4] - 2026-07-13
 
 Additive library API so `marg-server` can be embedded in another Rust binary

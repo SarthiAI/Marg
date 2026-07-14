@@ -13,6 +13,8 @@ use kavach_core::{
     PolicyEngine, PolicySet, SessionAgeDrift, SessionStore, TokenSigner, Verdict,
 };
 use kavach_pq::{PqTokenSigner, SignedAuditChain, Signer, Verifier};
+
+use super::audit_target::AuditChainHandle;
 use kavach_redis::RedisSessionStore;
 use marg_core::{InvariantToml, KavachConfig, LoadedKavachPolicy};
 use std::path::PathBuf;
@@ -135,7 +137,7 @@ pub struct KavachRuntime {
     pub gate: Arc<Gate>,
     pub policy_engine: Arc<PolicyEngine>,
     pub invariants: Arc<SwappableInvariantSet>,
-    pub audit_chain: Arc<SignedAuditChain>,
+    pub audit_chain: AuditChainHandle,
     /// Per-process JSONL file the audit chain is flushed to. The flush task
     /// appends to it; the admin audit handlers read it back and stitch it to
     /// the in-memory tail to serve / verify the full chain after pruning.
@@ -246,7 +248,7 @@ pub async fn build_runtime(
     kavach_cfg: &KavachConfig,
     loaded: &LoadedKavachPolicy,
     cluster: Option<ClusterRuntimeParams>,
-    injected_chain: Option<Arc<SignedAuditChain>>,
+    injected_chain: Option<AuditChainHandle>,
 ) -> Result<Arc<KavachRuntime>> {
     let mode = KavachMode::from_config(kavach_cfg);
     if matches!(mode, KavachMode::Enforce) && loaded.policies.is_empty() {
@@ -260,20 +262,22 @@ pub async fn build_runtime(
         .context("loading or generating kavach signing keypair")?;
     let verifier = Verifier::from_bundle(&keypair.public_keys(), kavach_cfg.audit_hybrid);
 
-    // Audit chain: use the host-injected shared chain when embedding (ADR-031),
+    // Audit chain: use the host-injected chain when embedding (ADR-031/ADR-032),
     // so Marg's verdict + request entries land in the host's one chain and are
     // exported/verified alongside the host's other planes. The injected chain
-    // must derive from the same keypair (shared via `[kavach].keypair_path`)
-    // so permits and audit entries verify under one bundle. When not injected,
-    // create the process-local chain exactly as before. The gate is built
-    // without `with_audit` (ADR-015): Marg appends one entry per request
-    // explicitly to `audit_chain`, so injecting it here is sufficient; there is
-    // no separate gate sink to redirect.
+    // may be raw (`with_audit_chain`) or a bounded `ManagedAuditChain`
+    // (`with_managed_audit_chain`); either way it must derive from the same
+    // keypair (shared via `[kavach].keypair_path`) so permits and audit entries
+    // verify under one bundle. When not injected, create the process-local raw
+    // chain exactly as before, bounded by the `flush.rs` task in `lib.rs`. The
+    // gate is built without `with_audit` (ADR-015): Marg appends one entry per
+    // request explicitly to `audit_chain`, so injecting it here is sufficient;
+    // there is no separate gate sink to redirect.
     let audit_chain = match injected_chain {
-        Some(chain) => chain,
+        Some(handle) => handle,
         None => {
             let signer = Signer::from_keypair(&keypair, kavach_cfg.audit_hybrid);
-            Arc::new(SignedAuditChain::new(signer))
+            AuditChainHandle::Raw(Arc::new(SignedAuditChain::new(signer)))
         }
     };
 

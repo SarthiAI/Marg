@@ -4,7 +4,7 @@
 //! request** with the full lifecycle packed into the `context_snapshot` JSON,
 //! plus separate dedicated entries for non-request events (policy reload, key
 //! events). This module is the single place those entries are constructed
-//! and appended to `SignedAuditChain`.
+//! and appended, through the `AuditChainHandle` (raw or managed chain).
 //!
 //! Encoding the response permit token for the caller header is also here
 //! since it pairs naturally with the lifecycle emit.
@@ -13,12 +13,11 @@ use chrono::Utc;
 use data_encoding::BASE64URL_NOPAD;
 use kavach_core::audit::AuditEntry;
 use kavach_core::{ActionContext, PermitToken, Verdict};
-use kavach_pq::SignedAuditChain;
 use serde_json::{json, Value};
 use std::path::PathBuf;
-use std::sync::Arc;
 use uuid::Uuid;
 
+use crate::kavach::audit_target::AuditChainHandle;
 use crate::kavach::context::RequestLifecycle;
 
 #[derive(Debug, Clone, Copy)]
@@ -47,7 +46,7 @@ impl KeyEventKind {
 /// `real_kind = "refuse"` and `effective_kind = "permit"` is the "would have
 /// refused" signal `marg policy audit` surfaces.
 pub fn audit_request_lifecycle(
-    chain: &Arc<SignedAuditChain>,
+    chain: &AuditChainHandle,
     ctx: &ActionContext,
     real_verdict: &Verdict,
     effective_verdict: &Verdict,
@@ -82,7 +81,7 @@ pub fn audit_request_lifecycle(
 /// (and from SIGHUP). The principal is `"admin:<token_id>"` when an admin
 /// triggered the reload, `"system"` for SIGHUP, recorded by the caller.
 pub fn emit_policy_reload(
-    chain: &Arc<SignedAuditChain>,
+    chain: &AuditChainHandle,
     principal: &str,
     previous_hash: &str,
     new_hash: &str,
@@ -137,7 +136,7 @@ pub fn emit_policy_reload(
 /// branch. The principal is the admin token id for admin-driven events,
 /// `"system"` for system-driven (e.g. expiry, drift).
 pub fn emit_key_event(
-    chain: &Arc<SignedAuditChain>,
+    chain: &AuditChainHandle,
     principal: &str,
     key_id: &str,
     kind: KeyEventKind,

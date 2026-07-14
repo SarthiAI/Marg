@@ -12,7 +12,7 @@ Instead of calling `marg_server::run(...)` (which binds sockets and takes over t
 
 - **`GatewayBuilder`** builds the whole gateway from a config, but binds no socket and installs no signal handler. You own the runtime, the listeners, and shutdown.
 - **`Gateway`** hands you a mountable `axum::Router` (`gateway.router()`), an optional admin router (`gateway.admin_router()`), access to the Kavach runtime (`gateway.kavach()`), and a `gateway.reload()` you wire to whatever triggers a config reload.
-- **An injectable audit chain** so Marg writes its records into a chain you own and share with the rest of your process.
+- **An injectable audit chain** so Marg writes its records into a chain you own and share with the rest of your process. Inject a raw `SignedAuditChain` (`with_audit_chain`) or a bounded, self-pruning `ManagedAuditChain` (`with_managed_audit_chain`) when you want resident memory to stay flat under sustained traffic.
 - **Two content hooks** that run inside the request pipeline, so you can inspect or replace a prompt before it is sent and a response before it is returned.
 
 ## Minimal example
@@ -41,6 +41,27 @@ axum::serve(listener, app).await?;
 `GatewayBuilder::from_config(config)` takes an already-parsed `marg_core::Config` if you build your config in memory instead of from a file. A gateway built that way cannot `reload()` from disk (there is no source path), which is the only difference.
 
 Register neither a chain nor hooks and you get the exact standalone pipeline. Everything below is opt-in.
+
+## Bounded audit memory (managed chain)
+
+A raw `SignedAuditChain` keeps every entry in memory. Standalone, Marg bounds its own chain by flushing old entries to disk and pruning them; but when you inject a chain, that chain is yours to persist, so its memory is your responsibility. For a shared chain that stays flat under sustained, high-volume traffic, inject a `kavach_pq::ManagedAuditChain` instead. It persists old entries through its own sink (for example a `FileAuditSink`) and prunes them from memory under a `RetentionPolicy`, so resident memory stays flat while the full chain grows on disk.
+
+```rust,ignore
+use kavach_pq::{ManagedAuditChain, RetentionPolicy, Signer};
+
+// Same signer/keypair your other planes use (see "One trust root").
+let managed = Arc::new(ManagedAuditChain::with_file_sink(
+    signer,
+    "/var/lib/niyam/audit/chain.jsonl",
+    RetentionPolicy::default(), // ~10k resident entries, spill the rest to disk
+));
+
+let gateway = GatewayBuilder::from_config_path("marg.toml").await?
+    .with_managed_audit_chain(managed.clone())
+    .build().await?;
+```
+
+The contract is identical to `with_audit_chain`: Marg appends every verdict and request record into the one chain, and does not flush it (the managed chain self-prunes). Inject at most one chain; passing both `with_audit_chain` and `with_managed_audit_chain` is rejected at `build()`. Reading and verifying the full chain (disk segment plus the in-memory tail) works exactly as with the raw chain.
 
 ## The content hooks
 
@@ -96,7 +117,7 @@ When you inject a chain, Marg does not flush it to its own export file. Your pro
 
 ## The `kavach-pq` version requirement
 
-`with_audit_chain` takes `Arc<kavach_pq::SignedAuditChain>`, so `kavach-pq` is part of `marg-server`'s public API. Your binary and `marg-server` must resolve the **same** `kavach-pq` version, or the two `SignedAuditChain` types are considered different and the code will not compile. Keep both on compatible caret ranges (for example `kavach-pq = "0.1"`) so Cargo unifies them to one version. A `kavach-pq` major bump becomes a coordinated release across Kavach, Marg, and your host.
+`with_audit_chain` takes `Arc<kavach_pq::SignedAuditChain>` and `with_managed_audit_chain` takes `Arc<kavach_pq::ManagedAuditChain>`, so `kavach-pq` is part of `marg-server`'s public API. Your binary and `marg-server` must resolve the **same** `kavach-pq` version, or the two `SignedAuditChain` types are considered different and the code will not compile. Keep both on compatible caret ranges (for example `kavach-pq = "0.1"`) so Cargo unifies them to one version. A `kavach-pq` major bump becomes a coordinated release across Kavach, Marg, and your host.
 
 ## What does not change
 

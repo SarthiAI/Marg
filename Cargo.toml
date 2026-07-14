@@ -9,7 +9,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.1.4"
+version = "0.1.5"
 edition = "2021"
 license = "Elastic-2.0"
 rust-version = "1.75"
@@ -68,14 +68,19 @@ prometheus = { version = "0.13", default-features = false, features = ["process"
 # 0.1.2 repins ml-dsa = "=0.1.0" (stable) upstream, which removes the
 # rc-vs-stable pkcs8 collision Marg worked around during P09 with a direct
 # pkcs8 = "=0.11.0-rc.11" workspace dep. That workaround is gone in P10.
-kavach-core  = ">=0.1.2, <0.2.0"
-kavach-pq    = ">=0.1.2, <0.2.0"
-kavach-redis = ">=0.1.2, <0.2.0"
+#
+# Floor raised to 0.1.5 in P27: the embedded gateway can be handed a
+# `kavach_pq::ManagedAuditChain` (bounded audit memory), which lands in
+# kavach-pq 0.1.5. The trio moves together to keep the chain type identical
+# across the embedding boundary (ADR-032).
+kavach-core  = ">=0.1.5, <0.2.0"
+kavach-pq    = ">=0.1.5, <0.2.0"
+kavach-redis = ">=0.1.5, <0.2.0"
 
-marg-core = { path = "marg-core", version = "0.1.4" }
-marg-server = { path = "marg-server", version = "0.1.4" }
-marg-storage = { path = "marg-storage", version = "0.1.4" }
-marg-providers = { path = "marg-providers", version = "0.1.4" }
+marg-core = { path = "marg-core", version = "0.1.5" }
+marg-server = { path = "marg-server", version = "0.1.5" }
+marg-storage = { path = "marg-storage", version = "0.1.5" }
+marg-providers = { path = "marg-providers", version = "0.1.5" }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
